@@ -1,0 +1,2 @@
+# Сообщение коммита должно соответствовать Conventional Commits
+npx --no -- commitlint --edit "$1"

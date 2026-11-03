@@ -1,0 +1,17 @@
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 2
+
+# В markdown два пробела в конце строки — перенос, не трогаем
+[*.md]
+trim_trailing_whitespace = false
+
+# Windows-скрипты требуют CRLF
+[*.{bat,cmd}]
+end_of_line = crlf

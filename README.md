@@ -38,6 +38,12 @@ covskiy-folio/
 │  ├─ local-dev.md                          # локальная разработка, llama.cpp, тесты
 │  └─ telegram.md                           # создание бота и настройка webhook
 ├─ .agents/skills/ + skills-lock.json       # официальные агент-скилы Vercel (skills.sh)
+├─ AGENTS.md                                # правила для агентов: команды, коммиты, цепочка git
+├─ .husky/                                  # pre-commit (format→lint→types→test) + commit-msg (commitlint)
+├─ .commitlintrc.json                       # правила сообщений коммитов (Conventional Commits)
+├─ .editorconfig                            # единые настройки редакторов (LF, отступы)
+├─ .gitattributes                           # LF в репо и при checkout — без LF/CRLF-морганий
+├─ .oxlintrc.json / .oxfmtrc.json           # конфиги линтера и форматтера
 ├─ vercel.json                              # rewrites: /api/chat и /api/telegram → /api/bot
 ├─ vite.config.ts                           # MPA-входы + proxy /api для локалки
 ├─ tsconfig.json                            # строгий TS (фронт + функции + тесты)
@@ -56,6 +62,12 @@ covskiy-folio/
 | `npm run lint`         | oxlint (Rust-линтер из oxc) по коду проекта                                                 |
 | `npm run format`       | oxfmt — форматирование всех файлов                                                          |
 | `npm run format:check` | проверка форматирования (часть pre-commit хука husky)                                       |
+
+## Коммиты
+
+Conventional Commits (`feat:`, `fix:`, `docs:`, `chore:`, …) — проверяет commitlint
+в хуке `commit-msg`. Pre-commit husky перед каждым коммитом сам гоняет
+`format:check → lint → typecheck → test`. Пуш — только по согласованию.
 
 ## Переменные окружения
 

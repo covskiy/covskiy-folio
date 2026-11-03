@@ -1,0 +1,20 @@
+# В репозитории и при checkout — LF на всех платформах (никаких LF/CRLF-морганий).
+# Git сам перестаёт зависеть от core.autocrlf: .gitattributes имеет приоритет.
+* text=auto eol=lf
+
+# Windows-скрипты — исключение, им нужен CRLF
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Бинарники — никогда не трогать
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.webp binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.zip binary
+*.gguf binary
