@@ -2,6 +2,7 @@
 // относительных импортах — Vercel запускает функцию голым Node-лоадером.
 import { handleWebChat } from "../lib/webchat.js";
 import { handleTelegramWebhook } from "../lib/telegram-webhook.js";
+import { handleTelegramAdmin } from "../lib/telegram-admin.js";
 
 // Единственная Vercel Function проекта: маршрутизация по пути запроса.
 // /api/chat и /api/telegram попадают сюда через rewrites из vercel.json,
@@ -14,6 +15,8 @@ export default {
         return handleWebChat(request);
       case "/api/telegram":
         return handleTelegramWebhook(request);
+      case "/api/telegram-setup":
+        return handleTelegramAdmin(request);
       default:
         return Response.json({ ok: false, error: "Not Found" }, { status: 404 });
     }

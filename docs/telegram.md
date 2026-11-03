@@ -23,21 +23,34 @@ node -e "console.log(crypto.randomBytes(24).toString('hex'))"
 
 ## 3. Регистрация webhook
 
+Основной способ — через админ-маршрут на Vercel (`lib/telegram-admin.ts`):
+прямого доступа к api.telegram.org не нужно (у части провайдеров он заблокирован).
+
+```bash
+curl -X POST https://covskiy-folio.vercel.app/api/telegram-setup \
+  -H "x-telegram-bot-api-secret-token: $TELEGRAM_WEBHOOK_SECRET"
+```
+
+Маршрут сам подставит `url` вебхука (из origin запроса) и `secret_token`
+(из env Vercel), `allowed_updates: ["message"]`. Ожидаемый ответ:
+`{"ok":true,"result":true,"description":"Webhook was set"}`.
+
+Проверка (тем же адресом, метод GET):
+
+```bash
+curl https://covskiy-folio.vercel.app/api/telegram-setup \
+  -H "x-telegram-bot-api-secret-token: $TELEGRAM_WEBHOOK_SECRET"
+```
+
+Хорошо: `url` задан, `pending_update_count` маленький, нет `last_error_message`.
+
+Прямой вызов Bot API — если есть VPN/DPI до Telegram:
+
 ```bash
 curl "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/setWebhook" \
   --data-urlencode "url=https://covskiy-folio.vercel.app/api/telegram" \
   --data-urlencode "secret_token=$TELEGRAM_WEBHOOK_SECRET"
 ```
-
-Требования Telegram к URL: HTTPS (у Vercel это из коробки) и совпадение секрета.
-
-Проверка:
-
-```bash
-curl "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/getWebhookInfo"
-```
-
-Хорошо: `url` задан, `pending_update_count` маленький, нет `last_error_message`.
 
 ## 4. Как это работает
 
@@ -56,8 +69,11 @@ curl "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/getWebhookInfo"
 
 ## 5. Смена/снятие webhook
 
+Перенести на другой URL или сменить секрет — просто вызвать setWebhook заново
+(админ-маршрут из шага 3 или прямой вызов). Снять webhook можно только прямым
+вызовом `deleteWebhook` — админ-маршрут его не делает:
+
 ```bash
-# перенести на другой URL или сменить секрет — просто вызвать setWebhook заново
 curl "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/deleteWebhook"   # отключить
 ```
 

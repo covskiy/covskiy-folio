@@ -51,22 +51,31 @@ npx vercel env add TELEGRAM_WEBHOOK_SECRET production
 После добавления переменных сделай **Redeploy** (Deployments → ⋯ → Redeploy),
 чтобы они попали в работающую функцию.
 
+> Env запекается в деплой: любые правки переменных (дашборд или CLI) требуют
+> Redeploy. `.env.local` наверх **не синхронизируется** — значения задаются
+> дашбордом или `vercel env add`; `vercel env pull` работает только в обратную
+> сторону и перезаписывает файл.
+
 > Секретные значения не должны попадать в git: в репозитории только `.env.example`.
 
 ## 4. Webhook Telegram
 
 После деплоя у проекта есть URL вида `https://covskiy-folio.vercel.app`.
-Регистрируем webhook (секрет должен совпадать с `TELEGRAM_WEBHOOK_SECRET` из шага 3):
+Регистрируем webhook через админ-маршрут на Vercel — прямого доступа к
+api.telegram.org не нужно (у части провайдеров он заблокирован):
 
 ```bash
-curl "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/setWebhook" \
-  --data-urlencode "url=https://covskiy-folio.vercel.app/api/telegram" \
-  --data-urlencode "secret_token=$TELEGRAM_WEBHOOK_SECRET"
+curl -X POST https://covskiy-folio.vercel.app/api/telegram-setup \
+  -H "x-telegram-bot-api-secret-token: $TELEGRAM_WEBHOOK_SECRET"
+# {"ok":true,"result":true,"description":"Webhook was set"}
 ```
 
-Ожидаемый ответ: `{"ok":true,"result":true,"description":"Webhook was set"}`.
-Проверка: `curl https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/getWebhookInfo` —
+Маршрут сам подставит `url` вебхука (из origin запроса) и `secret_token`
+(из env Vercel). Диагностика — тем же адресом методом GET (`getWebhookInfo`):
 `url` задан, `last_error_message` отсутствует.
+
+Альтернатива — прямые вызовы Bot API (нужен VPN/DPI до Telegram):
+см. [telegram.md](telegram.md).
 
 Подробности про бота — [telegram.md](telegram.md).
 
@@ -89,9 +98,11 @@ git add . && git commit -m "…" && git push
 
 ## Если что-то не так
 
-| Симптом                       | Где смотреть                                                                      |
-| ----------------------------- | --------------------------------------------------------------------------------- |
-| 401 на webhook                | совпадает ли `TELEGRAM_WEBHOOK_SECRET` с secret_token в setWebhook                |
-| Бот молчит                    | `getWebhookInfo` → `last_error_message`; логи функции в дашборде                  |
-| Чат отвечает «офлайн-справка» | env `LLM_*` заданы? redeploy после добавления? endpoint доступен?                 |
-| Сборка упала                  | вкладка Build в Vercel: локально повторяется `npm run build && npm run typecheck` |
+| Симптом                                        | Где смотреть                                                                                                     |
+| ---------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| 401 на webhook                                 | совпадает ли `TELEGRAM_WEBHOOK_SECRET` с secret_token в setWebhook                                               |
+| 500 на /api/* (`ERR_MODULE_NOT_FOUND` в логах) | забыли `.js` в относительном импорте `api/`/`lib/` (см. «Грабли платформы» в [architecture.md](architecture.md)) |
+| TS2688 в логах сборки                          | шум транслятора Vercel (transpile-only) — на работу не влияет                                                    |
+| Бот молчит                                     | `GET /api/telegram-setup` → `last_error_message`; логи функции в дашборде                                        |
+| Чат отвечает «офлайн-справка»                  | env `LLM_*` заданы? redeploy после добавления? endpoint доступен?                                                |
+| Сборка упала                                   | вкладка Build в Vercel: локально повторяется `npm run build && npm run typecheck`                                |

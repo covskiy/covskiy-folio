@@ -53,6 +53,12 @@ LLM — любой OpenAI-совместимый endpoint (`LLM_BASE_URL`, по 
 - Контент справки бота правится в `lib/knowledge.ts`, не в коде `lib/brain.ts`.
 - Функция одна: `api/bot.ts` — только роутер по pathname; новая логика — в `lib/`,
   новый маршрут — ветка switch + обработчик в `lib/` (+ rewrites в `vercel.json`).
+- Относительные импорты в `api/` и `lib/` — **только с расширением `.js`** (`"./brain.js"`).
+  Сервер живёт в нативном ESM (`"type": "module"`): Vercel грузит функцию голым
+  Node-лоадером и без расширения падает с 500 `ERR_MODULE_NOT_FOUND`. Локально
+  vite/vitest/tsc расширение прощают — прод-ошибку локальными проверками не поймать.
+- `process` в серверном коде — только через `import process from "node:process"`,
+  не как глобал (типы не должны зависеть от резолва `types` в tsconfig).
 - Общий серверный код держим **вне `api/`** (Vercel деплоит каждый файл `api/` как отдельную функцию).
 - Тесты не ходят в сеть: `fetch` подменяется через `vi.stubGlobal` (см. `tests/`).
 
@@ -60,6 +66,9 @@ LLM — любой OpenAI-совместимый endpoint (`LLM_BASE_URL`, по 
 
 - Hobby-план, Fluid compute; функции в корневом `api/`, `vercel.json` — только rewrites.
 - Env: `LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_WEBHOOK_SECRET`.
+  Env запекается в деплой: после правки переменных — Redeploy; `.env.local` наверх
+  не синхронизируется (значения — `vercel env add` или дашборд). Грабли платформы —
+  [docs/architecture.md](docs/architecture.md) → «Грабли платформы».
 - Установлены официальные агент-скилы Vercel: `.agents/skills/` (source `vercel-labs/agent-skills`,
   зафиксировано в `skills-lock.json`). Каталоги `agent/`, `.zcode/`, `.claude/` — производные,
   в git не ходят.

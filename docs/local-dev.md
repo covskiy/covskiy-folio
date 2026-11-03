@@ -16,6 +16,10 @@ npx vercel dev --listen 3000     # требуется `npx vercel link` один
 npm run dev                      # открыть http://localhost:5173
 ```
 
+> На Windows (Win10 + Git Bash) `vercel dev` падает с `EISDIR: illegal operation
+> on a directory, realpath '<проект>'`. Тогда функция проверяется юнит-тестами и
+> симуляцией из раздела ниже, а сквозняк — на preview/прод-деплое.
+
 Env для локалки: `npx vercel env pull .env.local` (подтягивает переменные проекта
 из Vercel; команда **перезаписывает** файл — свои локальные правки вноси после pull).
 
@@ -47,7 +51,7 @@ LLM_MODEL=my-model
 
 ```bash
 npm run typecheck     # строгие типы: src + api + lib + tests
-npm run test          # Vitest: 21 тест, сеть подменена (fetch = vi.fn)
+npm run test          # Vitest: сеть подменена (fetch = vi.fn)
 npm run build         # прод-сборка MPA в dist/
 ```
 
@@ -57,12 +61,20 @@ npm run build         # прод-сборка MPA в dist/
 
 ## Проверка функции без Vercel (опционально)
 
-Функция — это просто объект с `fetch(request)`, её можно вызвать из Node напрямую:
+Функция — это просто объект с `fetch(request)`. Чтобы проверить её так, как её
+запускает Vercel (нативный ESM-лоадер, без бандлера), оттранслируй серверные файлы
+и загрузи нативно:
 
 ```bash
-npx esbuild api/bot.ts --bundle --platform=node --format=esm --outfile=.tmp/bot.mjs
-node -e "import('./.tmp/bot.mjs').then(async h => console.log(await (await h.default.fetch(new Request('http://x/api/chat'))).text()))"
+npx tsc --ignoreConfig api/bot.ts lib --outDir .tmp/sim \
+  --module nodenext --moduleResolution nodenext --target es2022 \
+  --lib es2022,dom,dom.iterable --skipLibCheck
+printf '{"type":"module"}' > .tmp/sim/package.json
+node --env-file=.env.local -e "import('./.tmp/sim/api/bot.js').then(h => h.default.fetch(new Request('http://x/api/chat'))).then(r => r.text()).then(console.log)"
 ```
 
-Для полноценной локальной отладки всё же удобнее `vercel dev` — он поднимает
-тот же рантайм, что и в проде.
+Именно нативная загрузка (а не `esbuild --bundle`, который всё склеивает) ловит
+главный грабль — забытые расширения `.js` в относительных импортах `api/` и `lib/`.
+
+Для полноценной локальной отладки удобнее `vercel dev` — если он работает
+(см. замечание в начале файла).

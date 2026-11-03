@@ -23,4 +23,10 @@ describe("роутер api/bot (единая функция)", () => {
     );
     expect(res.status).toBe(401);
   });
+
+  it("/api/telegram-setup прокидывается в админ-маршрут (без секрета → 404)", async () => {
+    vi.stubEnv("TELEGRAM_WEBHOOK_SECRET", "s");
+    const res = await bot.fetch(new Request("http://localhost/api/telegram-setup"));
+    expect(res.status).toBe(404);
+  });
 });

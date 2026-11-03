@@ -41,3 +41,22 @@ async function tgCall<T>(method: string, payload: unknown): Promise<T> {
 export function sendMessage(chatId: number, text: string): Promise<TgMessage> {
   return tgCall<TgMessage>("sendMessage", { chat_id: chatId, text });
 }
+
+export interface TgWebhookInfo {
+  url?: string;
+  pending_update_count?: number;
+  last_error_date?: number;
+  last_error_message?: string;
+}
+
+export function setWebhook(params: {
+  url: string;
+  secret_token?: string;
+  allowed_updates?: string[];
+}): Promise<boolean> {
+  return tgCall<boolean>("setWebhook", params);
+}
+
+export function getWebhookInfo(): Promise<TgWebhookInfo> {
+  return tgCall<TgWebhookInfo>("getWebhookInfo", {});
+}
