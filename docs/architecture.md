@@ -109,9 +109,11 @@ export default {
   транслятора @vercel/node: он запускает tsc из своего рабочего каталога, где
   `"types": ["node"]` из tsconfig не резолвится. Шаг transpile-only — на деплой
   и рантайм не влияет, чинить не нужно.
-- **`vercel dev` на Windows** (Win10 + Git Bash) падает с `EISDIR` на realpath
-  проекта. Локально функцию проверять юнит-тестами и симуляцией нативного ESM
-  (local-dev.md), сквозняк — на preview/проде.
+- **`vercel dev` и виртуальные диски** (RAM-диск ImDisk, subst): CLI зовёт
+  `fs.realpath.native` (`GetFinalPathNameByHandle`), который на таких томах падает
+  с `EISDIR` на любом пути — репо на виртуальном диске локальный dev-режим CLI
+  ломает, на физическом всё работает. На деплой-цепочку не влияет; остальной
+  тулчейн (vite/tsc/vitest/git) native realpath не зовёт. Детали — local-dev.md.
 
 ## Ограничения и развитие
 

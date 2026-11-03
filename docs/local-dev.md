@@ -16,9 +16,14 @@ npx vercel dev --listen 3000     # требуется `npx vercel link` один
 npm run dev                      # открыть http://localhost:5173
 ```
 
-> На Windows (Win10 + Git Bash) `vercel dev` падает с `EISDIR: illegal operation
-> on a directory, realpath '<проект>'`. Тогда функция проверяется юнит-тестами и
-> симуляцией из раздела ниже, а сквозняк — на preview/прод-деплое.
+> На виртуальных дисках (RAM-диск ImDisk, subst) `vercel dev` падает с
+> `EISDIR: illegal operation on a directory, realpath '<проект>'`. Причина:
+> CLI вызывает `fs.realpath.native` — обёртку libuv над `GetFinalPathNameByHandle`,
+> которая на таких томах не работает ни для одного пути (проверено: падает даже
+> на файле). На физическом диске всё работает. Если проект живёт на виртуальном
+> диске — функция проверяется юнит-тестами и симуляцией из раздела ниже, а
+> сквозняк — на preview/прод-деплое. Остальной тулчейн (vite, tsc, vitest, git)
+> на виртуальных дисках работает — нативный realpath они не зовут.
 
 Env для локалки: `npx vercel env pull .env.local` (подтягивает переменные проекта
 из Vercel; команда **перезаписывает** файл — свои локальные правки вноси после pull).
