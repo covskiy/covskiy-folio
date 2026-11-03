@@ -27,10 +27,12 @@ export async function handleTelegramWebhook(request: Request): Promise<Response>
   const message = update.message;
   if (message?.text) {
     try {
+      console.log(`[telegram-webhook] апдейт от ${message.chat.id}: ${message.text.slice(0, 80)}`);
       const reply = message.text.startsWith("/start")
         ? WELCOME_TEXT
         : (await answer([{ role: "user", content: message.text }])).text;
       await sendMessage(message.chat.id, reply);
+      console.log(`[telegram-webhook] ответ отправлен в ${message.chat.id}`);
     } catch (error) {
       console.error("[telegram-webhook]", error);
       try {
