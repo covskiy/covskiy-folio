@@ -1,4 +1,5 @@
-import { KNOWLEDGE, type KnowledgeItem } from "./knowledge";
+import process from "node:process";
+import { KNOWLEDGE, type KnowledgeItem } from "./knowledge.js";
 
 export type ChatRole = "user" | "assistant";
 

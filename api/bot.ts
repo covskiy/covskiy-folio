@@ -1,5 +1,7 @@
-import { handleWebChat } from "../lib/webchat";
-import { handleTelegramWebhook } from "../lib/telegram-webhook";
+// Нативный ESM (package.json: "type": "module") требует расширения в
+// относительных импортах — Vercel запускает функцию голым Node-лоадером.
+import { handleWebChat } from "../lib/webchat.js";
+import { handleTelegramWebhook } from "../lib/telegram-webhook.js";
 
 // Единственная Vercel Function проекта: маршрутизация по пути запроса.
 // /api/chat и /api/telegram попадают сюда через rewrites из vercel.json,

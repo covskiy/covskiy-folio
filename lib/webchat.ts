@@ -1,4 +1,4 @@
-import { answer, type ChatMessage } from "./brain";
+import { answer, type ChatMessage } from "./brain.js";
 
 const MAX_MESSAGES = 12;
 const MAX_CONTENT_LENGTH = 2_000;

@@ -1,5 +1,6 @@
-import { answer } from "./brain";
-import { sendMessage, type TgMessage } from "./telegram-api";
+import process from "node:process";
+import { answer } from "./brain.js";
+import { sendMessage, type TgMessage } from "./telegram-api.js";
 
 const SECRET_HEADER = "x-telegram-bot-api-secret-token";
 

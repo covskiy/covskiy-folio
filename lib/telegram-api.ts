@@ -1,3 +1,7 @@
+// Явный импорт вместо "types" в tsconfig: резолв @types не должен зависеть
+// от окружения сборки (на Vercel tsc запускается из другого cwd).
+import process from "node:process";
+
 const API_ROOT = "https://api.telegram.org";
 
 export interface TgChat {
