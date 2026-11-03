@@ -1,0 +1,13 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "ignorePatterns": [
+    ".agents/**",
+    "agent/**",
+    ".zcode/**",
+    ".claude/**",
+    "dist/**",
+    "node_modules/**",
+    ".tmp/**",
+    ".vercel/**"
+  ]
+}

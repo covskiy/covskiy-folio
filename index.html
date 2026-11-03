@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Covskiy — сайт-визитка</title>
+    <meta
+      name="description"
+      content="Сайт-визитка: кто я, чем занимаюсь и как связаться. Со всеми вопросами поможет чат-справка."
+    />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <script type="module" src="/src/main.ts"></script>
+  </head>
+  <body>
+    <header class="site-header">
+      <nav class="nav" aria-label="Основная навигация">
+        <a class="nav__brand" href="/">Covskiy</a>
+        <a class="nav__link is-active" href="/">Главная</a>
+        <a class="nav__link" href="/about.html">Обо мне</a>
+        <a class="nav__link" href="/contacts.html">Контакты</a>
+      </nav>
+    </header>
+
+    <main class="page">
+      <section class="hero">
+        <p class="hero__eyebrow">Сайт-визитка</p>
+        <h1 class="hero__title">Привет, я Covskiy</h1>
+        <p class="hero__lead">
+          <!-- Замени на своё: одно предложение о том, кто ты и чем полезен -->
+          Плейсхолдер короткого представления: чем занимаюсь, чем могу быть полезен, почему мне
+          можно доверять.
+        </p>
+        <div class="hero__actions">
+          <a class="btn" href="/about.html">Подробнее обо мне</a>
+          <a class="btn btn--ghost" href="/contacts.html">Как связаться</a>
+        </div>
+      </section>
+
+      <section class="cards" aria-label="Чем занимаюсь">
+        <!-- Замени на свои 3 карточки -->
+        <article class="card">
+          <h2 class="card__title">Направление 1</h2>
+          <p class="card__text">Плейсхолдер: пара предложений о первом направлении деятельности.</p>
+        </article>
+        <article class="card">
+          <h2 class="card__title">Направление 2</h2>
+          <p class="card__text">Плейсхолдер: пара предложений о втором направлении деятельности.</p>
+        </article>
+        <article class="card">
+          <h2 class="card__title">Направление 3</h2>
+          <p class="card__text">
+            Плейсхолдер: пара предложений о третьем направлении деятельности.
+          </p>
+        </article>
+      </section>
+
+      <section class="note">
+        <p>
+          Есть вопросы? Открой чат в правом нижнем углу — там живая справка обо мне, она же работает
+          и как Telegram-бот.
+        </p>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <span>© <span data-year></span> Covskiy</span>
+      <a href="/contacts.html">Контакты</a>
+    </footer>
+  </body>
+</html>
