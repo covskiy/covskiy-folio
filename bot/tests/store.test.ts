@@ -8,7 +8,7 @@ import {
   setValue,
   tgKey,
   webKey,
-} from "../lib/store";
+} from "../store";
 
 const REDIS_URL = "http://upstash.test";
 
@@ -256,7 +256,7 @@ describe("store: fail-open (любая проблема — пустой рез�
     stubUpstash(async () => new Response("boom", { status: 500 }));
     vi.spyOn(console, "warn").mockImplementation(() => {});
 
-    const result = await import("../lib/store").then((m) => m.ping());
+    const result = await import("../store").then((m) => m.ping());
     expect(result.ok).toBe(false);
     expect(result.reason).toContain("PONG");
   });

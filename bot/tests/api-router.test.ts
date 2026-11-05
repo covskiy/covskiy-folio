@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import bot from "../api/bot";
+import bot from "../../api/bot";
 
 afterEach(() => {
   vi.unstubAllEnvs();

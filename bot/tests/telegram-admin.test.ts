@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { handleTelegramAdmin } from "../lib/telegram-admin";
-import { systemPrompt } from "../lib/prompt";
+import { handleTelegramAdmin } from "../http/telegram-admin";
+import { systemPrompt } from "../brain/prompt";
 
 const SECRET = "test-secret";
 const SETUP_URL = "http://localhost/api/telegram-setup";

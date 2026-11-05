@@ -15,5 +15,5 @@
     "noFallthroughCasesInSwitch": true,
     "skipLibCheck": true
   },
-  "include": ["src", "api", "lib", "tests"]
+  "include": ["src", "api", "bot"]
 }

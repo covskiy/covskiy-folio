@@ -50,18 +50,18 @@ LLM — любой OpenAI-совместимый endpoint (`LLM_BASE_URL`, по 
   конфиги в корне (`.oxfmtrc.json`, `.oxlintrc.json`).
 - Файлы — LF (`.gitattributes`, `.editorconfig`); не менять переводы строк руками.
 - Комментарии объясняют «почему», а не «что»; пользовательские тексты — по-русски.
-- Контент справки бота правится в `lib/knowledge.json` (промт — в
-  `lib/prompts/*.md`), не в коде `lib/brain.ts`.
-- Функция одна: `api/bot.ts` — только роутер по pathname; новая логика — в `lib/`,
-  новый маршрут — ветка switch + обработчик в `lib/` (+ rewrites в `vercel.json`).
-- Относительные импорты в `api/` и `lib/` — **только с расширением `.js`** (`"./brain.js"`).
+- Контент справки бота правится в `bot/brain/knowledge.json` (промт — в
+  `bot/brain/prompts/*.md`), не в коде `bot/brain/brain.ts`.
+- Функция одна: `api/bot.ts` — только роутер по pathname; новая логика — в `bot/`,
+  новый маршрут — ветка switch + обработчик в `bot/` (+ rewrites в `vercel.json`).
+- Относительные импорты в `api/` и `bot/` — **только с расширением `.js`** (`"./brain.js"`).
   Сервер живёт в нативном ESM (`"type": "module"`): Vercel грузит функцию голым
   Node-лоадером и без расширения падает с 500 `ERR_MODULE_NOT_FOUND`. Локально
   vite/vitest/tsc расширение прощают — прод-ошибку локальными проверками не поймать.
 - `process` в серверном коде — только через `import process from "node:process"`,
   не как глобал (типы не должны зависеть от резолва `types` в tsconfig).
 - Общий серверный код держим **вне `api/`** (Vercel деплоит каждый файл `api/` как отдельную функцию).
-- Тесты не ходят в сеть: `fetch` подменяется через `vi.stubGlobal` (см. `tests/`).
+- Тесты не ходят в сеть: `fetch` подменяется через `vi.stubGlobal` (см. `bot/tests/`).
 
 ## Платформа (Vercel)
 

@@ -103,7 +103,7 @@ git add . && git commit -m "…" && git push
 # → Vercel собирает и деплоит автоматически; PR'ы получают preview-URL
 ```
 
-Обновил справку в `lib/knowledge.json` (или промт в `lib/prompts/*.md`) — просто
+Обновил справку в `bot/brain/knowledge.json` (или промт в `bot/brain/prompts/*.md`) — просто
 пуш: сайт и бот отвечают по-новому.
 
 ## Если что-то не так
@@ -111,7 +111,7 @@ git add . && git commit -m "…" && git push
 | Симптом                                        | Где смотреть                                                                                                     |
 | ---------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
 | 401 на webhook                                 | совпадает ли `TELEGRAM_WEBHOOK_SECRET` с secret_token в setWebhook                                               |
-| 500 на /api/* (`ERR_MODULE_NOT_FOUND` в логах) | забыли `.js` в относительном импорте `api/`/`lib/` (см. «Грабли платформы» в [architecture.md](architecture.md)) |
+| 500 на /api/* (`ERR_MODULE_NOT_FOUND` в логах) | забыли `.js` в относительном импорте `api/`/`bot/` (см. «Грабли платформы» в [architecture.md](architecture.md)) |
 | TS2688 в логах сборки                          | шум транслятора Vercel (transpile-only) — на работу не влияет                                                    |
 | Бот молчит                                     | `GET /api/telegram-setup` → `last_error_message`; логи функции в дашборде                                        |
 | Чат отвечает «офлайн-справка»                  | env `LLM_*` заданы? redeploy после добавления? endpoint доступен?                                                |

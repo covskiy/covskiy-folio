@@ -1,7 +1,7 @@
 import process from "node:process";
 import { knowledgeEntries, systemPrompt, type KnowledgeItem } from "./prompt.js";
 // Единое определение сообщения диалога живёт в store.ts — дублировать нельзя.
-import type { ChatMessage } from "./store.js";
+import type { ChatMessage } from "../store.js";
 
 /**
  * Ответ «мозга» — единый формат для вебчата и Telegram.

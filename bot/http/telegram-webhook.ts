@@ -1,14 +1,14 @@
 import process from "node:process";
-import { answer } from "./brain.js";
-import { knowledgeEntries } from "./prompt.js";
-import { appendHistory, clearHistory, getHistory, tgKey } from "./store.js";
+import { answer } from "../brain/brain.js";
+import { knowledgeEntries } from "../brain/prompt.js";
+import { appendHistory, clearHistory, getHistory, tgKey } from "../store.js";
 import {
   answerCallbackQuery,
   editMessageText,
   sendMessage,
   type TgInlineKeyboardMarkup,
   type TgMessage,
-} from "./telegram-api.js";
+} from "../telegram-api.js";
 
 const SECRET_HEADER = "x-telegram-bot-api-secret-token";
 

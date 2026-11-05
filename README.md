@@ -26,7 +26,7 @@ covskiy-folio/
 │     ├─ chat-widget.ts                     # UI виджета (кнопка → панель, «печатает…»)
 │     ├─ chat-api.ts                        # клиент /api/chat: sessionId в localStorage, чипсы
 │     └─ chat.css                           # стили виджета
-├─ lib/                                     # СЕРВЕРНАЯ ЛОГИКА (вне api/ — см. docs/architecture.md)
+├─ bot/                                     # СЕРВЕРНАЯ ЛОГИКА (вне api/ — см. docs/architecture.md)
 │  ├─ knowledge.json                        # ★ СПРАВКА «мозга» — редактируй здесь
 │  ├─ prompts/                              # разделы system prompt (persona, rules, knowledge)
 │  ├─ prompt.ts                             # сборщик system prompt (md + knowledge.json)
@@ -99,8 +99,8 @@ Conventional Commits (`feat:`, `fix:`, `docs:`, `chore:`, …) — провер�
 
 ## Обновление справки
 
-Справка — [`lib/knowledge.json`](lib/knowledge.json) (массив `{title, text}`),
-system prompt — [`lib/prompts/`](lib/prompts). Поменял текст → `git push` →
+Справка — [`bot/brain/knowledge.json`](bot/brain/knowledge.json) (массив `{title, text}`),
+system prompt — [`bot/brain/prompts/`](bot/brain/prompts). Поменял текст → `git push` →
 автодеплой → и сайт, и бот отвечают по-новому. История диалогов живёт в
 Upstash Redis и на контент не влияет: она истечёт по TTL сама (24 часа) или
 очистится командой `/reset`.

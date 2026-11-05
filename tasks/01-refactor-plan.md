@@ -55,7 +55,7 @@
 
 ### C. Владелец
 
-1. Справка — правка `lib/knowledge.json`; промт — правка `lib/prompts/*.md`.
+1. Справка — правка `bot/brain/knowledge.json`; промт — правка `bot/brain/prompts/*.md`.
    Всё под git, источник истины — файлы.
 2. Пуш в `main` → деплой → оба канала обновились. Проверка до мерджа — на
    preview-ветке.
@@ -69,7 +69,7 @@
 
 | Требование                      | Механизм                                                                           |
 | ------------------------------- | ---------------------------------------------------------------------------------- |
-| Общая память диалога (web + tg) | `lib/store.ts` — обёртка Upstash Redis REST (fetch)                                |
+| Общая память диалога (web + tg) | `bot/store.ts` — обёртка Upstash Redis REST (fetch)                                |
 | Отказ хранилища не ломает бота  | fail-open: Redis недоступен → stateless-режим (только текущий вопрос)              |
 | История                         | ключи `chat:web:{sessionId}` / `chat:tg:{chatId}`, TTL 24ч, в промт — 10 сообщений |
 | Кнопки-подсказки                | `ask:{n}` → вопрос из справки; чипсы сайта — первые 3 элемента JSON                |
@@ -80,14 +80,14 @@
 Один Vercel Function сохраняется (`api/bot.ts` + rewrites): новых публичных
 маршрутов нет, callback_query приходит через существующий `/api/telegram`.
 
-### Структура lib/ и сборка system prompt
+### Структура bot/ и сборка system prompt
 
 ```
-lib/prompts/00-persona.md   — роль, тон
-lib/prompts/10-rules.md     — правила ответа
-lib/prompts/20-knowledge.md — каркас секции справки, плейсхолдер {{KNOWLEDGE}}
-lib/knowledge.json          — знания структурой {title, text}: dumb-режим и чипсы-подсказки
-lib/prompt.ts               — сборщик
+bot/brain/prompts/00-persona.md   — роль, тон
+bot/brain/prompts/10-rules.md     — правила ответа
+bot/brain/prompts/20-knowledge.md — каркас секции справки, плейсхолдер {{KNOWLEDGE}}
+bot/brain/knowledge.json          — знания структурой {title, text}: dumb-режим и чипсы-подсказки
+bot/brain/prompt.ts               — сборщик
 ```
 
 Сборщик — паттерн проверен трейсером (@vercel/nft) и нативным ESM-рантаймом:
@@ -95,7 +95,7 @@ lib/prompt.ts               — сборщик
 ```ts
 import { readFileSync } from "node:fs";
 
-// Знания — lib/knowledge.json: тот же fs-паттерн с литеральным путём,
+// Знания — bot/brain/knowledge.json: тот же fs-паттерн с литеральным путём,
 // без import-атрибутов (и их рисков на трансляторе облака).
 const KNOWLEDGE: { title: string; text: string }[] = JSON.parse(
   readFileSync(new URL("./knowledge.json", import.meta.url), "utf8"),
@@ -201,10 +201,10 @@ export function systemPrompt(): string {
 
 ## План работ (одна задача рефакторинга, шаги в порядке исполнения)
 
-1. **Контент и промт**: `lib/prompts/00-persona.md`, `10-rules.md`,
-   `20-knowledge.md`; `lib/knowledge.json` (перенос справки из TS);
-   `lib/prompt.ts` (сборщик по разделу «Архитектура»); обновить `lib/brain.ts`.
-2. **Хранилище**: `lib/store.ts` — get/set/del + история диалога, fail-open;
+1. **Контент и промт**: `bot/brain/prompts/00-persona.md`, `10-rules.md`,
+   `20-knowledge.md`; `bot/brain/knowledge.json` (перенос справки из TS);
+   `bot/brain/prompt.ts` (сборщик по разделу «Архитектура»); обновить `bot/brain/brain.ts`.
+2. **Хранилище**: `bot/store.ts` — get/set/del + история диалога, fail-open;
    обновить `.env.example` (UPSTASH_*-плейсхолдеры).
 3. **Локальный dev-адаптер функции**: небольшой node-скрипт (вне `api/`,
    не деплоится), оборачивающий `default.fetch` в node:http — замена
@@ -217,7 +217,7 @@ export function systemPrompt(): string {
    editMessageText; callback_query в webhook; `allowed_updates` в админ-маршруте.
 7. **Админ-маршрут**: health (LLM ping, Redis ping, webhook info) + просмотр
    промта. Только GET.
-8. **Тесты и статика кода**: обновить `tests/` (моки fetch покрывают store,
+8. **Тесты и статика кода**: обновить `bot/tests/` (моки fetch покрывают store,
    сценарии кнопок, fail-open); lint/typecheck/format.
 9. **Документация и деплой**: обновить `docs/architecture.md` под новую
    схему; локальная проверка владельцем; деплой preview на этой ветке;
@@ -265,8 +265,8 @@ Upstash обычно не нужна, всё провижинится через
 
 - `npm run lint` / `typecheck` / `format:check` / `test`.
 - Симуляция функции из [local-dev.md](../docs/local-dev.md): перед запуском
-  скопировать контент — `cp -r lib/prompts .tmp/sim/lib/` и
-  `cp lib/knowledge.json .tmp/sim/lib/`.
+  скопировать контент — `cp -r bot/brain/prompts .tmp/sim/bot/` и
+  `cp bot/brain/knowledge.json .tmp/sim/bot/`.
 - Сквозняк вебчата локально: dev-адаптер (шаг 3) + `npm run dev` (vite proxy).
 - Telegram-бот проверяется на preview-деплое этой ветки (вебхук переключить
   через админ-маршрут preview-URL и вернуть на прод после проверки).

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { answer } from "../lib/brain";
-import type { ChatMessage } from "../lib/store";
+import { answer } from "../brain/brain";
+import type { ChatMessage } from "../store";
 
 function llmResponse(text: string): Response {
   return new Response(JSON.stringify({ choices: [{ message: { content: text } }] }), {

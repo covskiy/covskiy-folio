@@ -1,6 +1,6 @@
-import { answer } from "./brain.js";
-import { knowledgeEntries } from "./prompt.js";
-import { appendHistory, getHistory, webKey } from "./store.js";
+import { answer } from "../brain/brain.js";
+import { knowledgeEntries } from "../brain/prompt.js";
+import { appendHistory, getHistory, webKey } from "../store.js";
 
 // sessionId — данные клиента и часть ключа Redis, поэтому жёсткий белый список:
 // только [A-Za-z0-9_-], длина 8–64 (uuid и crypto-строки проходят). Всё, что не

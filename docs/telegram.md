@@ -19,11 +19,11 @@ node -e "console.log(crypto.randomBytes(24).toString('hex'))"
 
 Это `TELEGRAM_WEBHOOK_SECRET`: одно значение в env на Vercel, то же — параметром
 `secret_token` при setWebhook. Telegram будет присылать его в каждом запросе
-заголовком `X-Telegram-Bot-Api-Secret-Token`, а `lib/telegram-webhook.ts` сверяет.
+заголовком `X-Telegram-Bot-Api-Secret-Token`, а `bot/http/telegram-webhook.ts` сверяет.
 
 ## 3. Регистрация webhook
 
-Основной способ — через админ-маршрут на Vercel (`lib/telegram-admin.ts`):
+Основной способ — через админ-маршрут на Vercel (`bot/http/telegram-admin.ts`):
 прямого доступа к api.telegram.org не нужно (у части провайдеров он заблокирован).
 
 ```bash
@@ -59,7 +59,7 @@ curl "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/setWebhook" \
 Пользователь пишет боту (или жмёт inline-кнопку на /start)
   → Telegram делает POST на /api/telegram
       (заголовок X-Telegram-Bot-Api-Secret-Token = наш секрет)
-  → api/bot.ts → lib/telegram-webhook.ts
+  → api/bot.ts → bot/http/telegram-webhook.ts
       сверяет секрет
       → команда (/start, /help, /reset, /about)? — ответ без записи в историю
       → иначе: история из Redis (chat:tg:{chat_id}) → brain.answer()

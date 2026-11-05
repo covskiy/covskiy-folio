@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { handleTelegramWebhook } from "../lib/telegram-webhook";
+import { handleTelegramWebhook } from "../http/telegram-webhook";
 
 const SECRET = "test-secret";
 const URL = "http://localhost/api/telegram";

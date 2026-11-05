@@ -17,15 +17,15 @@
                      │        роутер по pathname                 │
                      └──────────────┬────────────────────────────┘
                                     ▼
-                     lib/webchat.ts        lib/telegram-webhook.ts
+                     bot/http/webchat.ts        bot/http/telegram-webhook.ts
                              └──────┬──────┘
-                     lib/store.ts — история диалога в Upstash Redis
+                     bot/store.ts — история диалога в Upstash Redis
                         (REST; недоступен → stateless, fail-open)
                                     ▼
-                            lib/brain.ts — answer()
+                            bot/brain/brain.ts — answer()
                         LLM (OpenAI-совместимый API)
                                    ↘ при ошибке/таймауте
-                        dumb-поиск по lib/knowledge.json
+                        dumb-поиск по bot/brain/knowledge.json
 ```
 
 Третий rewrite ведёт в ту же функцию админ-маршрут `/api/telegram-setup`
@@ -50,17 +50,17 @@ export default {
 };
 ```
 
-## Контент и промт — lib/knowledge.json + lib/prompts/*.md
+## Контент и промт — bot/brain/knowledge.json + bot/brain/prompts/*.md
 
 Справка («мозг» бота) живёт в данных, не в коде:
 
-- `lib/knowledge.json` — массив `{title, text}`, источник истины для справки.
+- `bot/brain/knowledge.json` — массив `{title, text}`, источник истины для справки.
   Потребляют его трое: dumb-поиск (brain), чипсы вебчата (GET `/api/chat`) и
   inline-кнопки Telegram (`/start`) — везде берутся первые 3 заголовка.
-- `lib/prompts/00-persona.md`, `10-rules.md`, `20-knowledge.md` — разделы system
+- `bot/brain/prompts/00-persona.md`, `10-rules.md`, `20-knowledge.md` — разделы system
   prompt готовым текстом, без парсинга; единственная обработка — `trim()` и
   строковая подстановка плейсхолдера `{{KNOWLEDGE}}` в 20-knowledge.
-- `lib/prompt.ts` — сборщик: `systemPrompt()` склеивает md-разделы и вставляет
+- `bot/brain/prompt.ts` — сборщик: `systemPrompt()` склеивает md-разделы и вставляет
   справку, `knowledgeEntries()` отдаёт JSON. Чтение — `readFileSync` с
   литеральным `new URL(...)` относительно модуля: только такие пути nodeFileTrace
   затрейсит в артефакт функции (таблица — в «Граблях платформы»). Результат
@@ -70,7 +70,7 @@ export default {
 Контент вшивается в артефакт на деплое (как и env): правка справки или промта =
 пуш → деплой → оба канала отвечают по-новому.
 
-## Память диалога — lib/store.ts
+## Память диалога — bot/store.ts
 
 - Upstash Redis по REST API, чистый `fetch` без SDK (REST-эндпоинт один,
   зависимости не нужны): команда — JSON-массив в теле POST, таймаут 5 с.
@@ -79,14 +79,14 @@ export default {
   SET (атомарно; гонки concurrent-запросов одного чата для визитки не критичны —
   last-write-wins).
 - TTL 24 часа, обновляется при каждой записи — «скользящее окно» активности. В
-  промт идёт последние 10 сообщений (`HISTORY_WINDOW` в `lib/brain.ts`).
+  промт идёт последние 10 сообщений (`HISTORY_WINDOW` в `bot/brain/brain.ts`).
 - **Fail-open.** Любая проблема — нет env, сеть, не-200, ошибка в ответе, битый
   JSON — даёт пустую историю и `console.warn`, запрос не падает: бот обязан
   отвечать и без Redis, в stateless-режиме (контекст — только текущий вопрос).
 - `/reset` (Telegram) удаляет ключ; «новый диалог» вебчата — новый sessionId
   (старый ключ истечёт по TTL сам).
 
-## Вебчат — lib/webchat.ts + src/chat/
+## Вебчат — bot/http/webchat.ts + src/chat/
 
 - Клиент шлёт только `{sessionId, text}`. sessionId генерирует
   `crypto.randomUUID()` и хранит в localStorage — контекст переживает
@@ -101,7 +101,7 @@ export default {
   «печатает…», бейдж «офлайн-справка» для `mode=dumb`. Никакого innerHTML с
   данными пользователя — только `textContent`.
 
-## Telegram — lib/telegram-webhook.ts + lib/telegram-api.ts
+## Telegram — bot/http/telegram-webhook.ts + bot/telegram-api.ts
 
 - Webhook принимает только POST с заголовком `X-Telegram-Bot-Api-Secret-Token`,
   равным `TELEGRAM_WEBHOOK_SECRET` (секрет задаётся при setWebhook). Иначе — 401:
@@ -123,11 +123,11 @@ export default {
 - Ошибки отправки/LLM ловятся, наружу всегда отдаётся 200 (иначе Telegram будет
   повторять доставку update). Сообщения без текста (фото, стикеры) грациозно
   игнорируются.
-- `lib/telegram-api.ts` — тонкая обёртка Bot API на `fetch`, без зависимостей:
+- `bot/telegram-api.ts` — тонкая обёртка Bot API на `fetch`, без зависимостей:
   `sendMessage`, `editMessageText`, `answerCallbackQuery`, `setWebhook`,
   `getWebhookInfo`.
 
-## Админ-маршрут — /api/telegram-setup (lib/telegram-admin.ts)
+## Админ-маршрут — /api/telegram-setup (bot/http/telegram-admin.ts)
 
 Один путь (третий rewrite), ветвление по query-параметру `section` — подпути
 через `vercel.json` не заводим. Зачем: регистрация вебхука без прямого доступа к
@@ -173,7 +173,7 @@ npm run dev            # vite (5173), /api проксируется на 3000
   в артефакт функции. Это не склейка в один js-файл: артефакт — набор модулей,
   рантайм грузит их нативным Node-лоадером (отсюда следующий пункт).
 - **ESM-расширения.** Проект собран как `"type": "module"` — относительные импорты
-  в `api/` и `lib/` обязаны иметь расширение `.js`. Vercel запускает функцию нативным
+  в `api/` и `bot/` обязаны иметь расширение `.js`. Vercel запускает функцию нативным
   Node-лоадером: без расширения — `ERR_MODULE_NOT_FOUND` и 500 на любом запросе,
   включая GET. Локально vite/vitest/tsc расширение прощают, так что прод-падение
   ловится только симуляцией рантайма (см. local-dev.md) или деплоем.

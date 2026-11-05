@@ -6,7 +6,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "dev:function": "node scripts/dev-function.mjs",
+    "dev:function": "node bot/dev/dev-function.mjs",
     "build": "vite build",
     "preview": "vite preview",
     "test": "vitest run",

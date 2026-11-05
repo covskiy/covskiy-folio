@@ -11,7 +11,7 @@
 | Процесс                | Порт | Что даёт                                                              |
 | ---------------------- | ---- | --------------------------------------------------------------------- |
 | `npm run dev`          | 5173 | vite dev: HMR фронтенда; `/api` проксирует на 3000 (`vite.config.ts`) |
-| `npm run dev:function` | 3000 | функция локально: tsc `api/` + `lib/`, контент, env из `.env.local`   |
+| `npm run dev:function` | 3000 | функция локально: tsc `api/` + `bot/`, контент, env из `.env.local`   |
 
 ```bash
 # терминал 1
@@ -69,12 +69,12 @@ LLM_MODEL=my-model
 ## Проверки
 
 ```bash
-npm run typecheck     # строгие типы: src + api + lib + tests
+npm run typecheck     # строгие типы: src + api + bot
 npm run test          # Vitest: сеть подменена (fetch = vi.fn)
 npm run build         # прод-сборка MPA в dist/
 ```
 
-Тесты (`tests/`) не ходят в сеть: глобальный `fetch` подменяется через
+Тесты (`bot/tests/`) не ходят в сеть: глобальный `fetch` подменяется через
 `vi.stubGlobal`, LLM и Telegram Bot API имитируются фикс-ответами. Поэтому
 «падение LLM → dumb-режим» и «ошибка Telegram не роняет webhook» покрыты юнитами.
 
@@ -85,7 +85,7 @@ npm run build         # прод-сборка MPA в dist/
 и загрузи нативно:
 
 ```bash
-npx tsc --ignoreConfig api/bot.ts lib --outDir .tmp/sim \
+npx tsc --ignoreConfig api/bot.ts bot --outDir .tmp/sim \
   --module nodenext --moduleResolution nodenext --target es2022 \
   --lib es2022,dom,dom.iterable --skipLibCheck
 printf '{"type":"module"}' > .tmp/sim/package.json
@@ -93,14 +93,14 @@ node --env-file=.env.local -e "import('./.tmp/sim/api/bot.js').then(h => h.defau
 ```
 
 Именно нативная загрузка (а не `esbuild --bundle`, который всё склеивает) ловит
-главный грабль — забытые расширения `.js` в относительных импортах `api/` и `lib/`.
+главный грабль — забытые расширения `.js` в относительных импортах `api/` и `bot/`.
 
 Для полноценной локальной отладки используй `npm run dev:function` (раздел ниже) —
 ручная симуляция остаётся как одноразовая проверка без сервера.
 
 ## Dev-адаптер функции (`npm run dev:function`)
 
-Основной способ поднять функцию локально — адаптер `scripts/dev-function.mjs`
+Основной способ поднять функцию локально — адаптер `bot/dev/dev-function.mjs`
 (вне `api/`, не деплоится); `vercel dev` на этой машине не работает — примечание
 в начале файла и [tasks/01-refactor-plan.md](../tasks/01-refactor-plan.md) →
 «Локальные грабли»:
@@ -114,10 +114,10 @@ npm run dev                      # открыть http://localhost:5173
 
 Адаптер сам, на каждом старте:
 
-1. компилирует `api/bot.ts` (+ подтянутые импортами `lib/`) в `.tmp/dev-function`
+1. компилирует `api/bot.ts` (+ подтянутые импортами `bot/`) в `.tmp/dev-function`
    нативным tsc — та же нативная ESM-загрузка, что и на Vercel, ловит забытые
    `.js`-расширения;
-2. копирует в скомпилированный `lib/` контент — `knowledge.json` и `prompts/`
+2. копирует в скомпилированный `bot/` контент — `knowledge.json` и `prompts/`
    (tsc за собой json/md не тянет, без копии `prompt.ts` упадёт ENOENT);
 3. подхватывает `.env.local`, если он есть (уже выставленные переменные не
    перекрывает); нет файла — просто пустые env (сработает fail-open store /
@@ -141,6 +141,6 @@ UPSTASH_REDIS_REST_TOKEN=fake
 Адаптер увидит адрес `upstash.fake` и подменит `fetch` для него: команды
 `get/set/del/ping/ttl` уходят в память процесса (трафик виден в консоли как
 `[dev-function][fake-upstash] …`), до облака ничего не долетает — функция в
-`lib/store.ts` при этом не меняется. История переживает перезагрузку страницы,
+`bot/store.ts` при этом не меняется. История переживает перезагрузку страницы,
 но не рестарт адаптера — осознанный компромисс заглушки. Вернуться на реальный
 Redis: раскомментировать `KV_REST_API_URL/TOKEN` и убрать пару выше.

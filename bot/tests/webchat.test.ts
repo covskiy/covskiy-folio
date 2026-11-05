@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { handleWebChat } from "../lib/webchat";
-import { knowledgeEntries } from "../lib/prompt";
+import { handleWebChat } from "../http/webchat";
+import { knowledgeEntries } from "../brain/prompt";
 
 const URL = "http://localhost/api/chat";
 const SESSION_ID = "3f2a9c8e-1b4d-4e6f-9a7b-2c5d8e0f1a2b";

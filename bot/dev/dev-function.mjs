@@ -3,12 +3,12 @@
  * `vercel dev` (EPERM на symlink в кэше билдеров, см. tasks/01-refactor-plan.md,
  * раздел «Локальные грабли этой машины (Windows)»).
  *
- * Что делает: компилирует api/bot.ts + lib/ в .tmp/dev-function (нативный
+ * Что делает: компилирует api/bot.ts + bot/ в .tmp/dev-function (нативный
  * Node-лоадер, как на Vercel — ловит забытые .js-расширения), копирует туда
- * контент (lib/knowledge.json, lib/prompts/ — tsc за импортами json/md не идёт,
- * без копии prompt.ts упадёт ENOENT), поднимает node:http на порту 3000
- * (vite proxy уже смотрит на 3000) и на каждый запрос зовёт default.fetch.
- * Не деплоится: живёт в scripts/, вне api/.
+ * контент (bot/brain/knowledge.json, bot/brain/prompts/ — tsc за импортами
+ * json/md не идёт, без копии prompt.ts упадёт ENOENT), поднимает node:http
+ * на порту 3000 (vite proxy уже смотрит на 3000) и на каждый запрос зовёт
+ * default.fetch. Не деплоится: живёт в bot/dev/, вне api/.
  *
  * Порт: 3000 (под vite proxy), переопределяется env DEV_FUNCTION_PORT.
  * Env: опционально читает .env.local (уже выставленные переменные не
@@ -27,7 +27,8 @@ import { dirname, join } from "node:path";
 import process from "node:process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
+// bot/dev/dev-function.mjs → bot/ → ROOT: вверх на два каталога.
+const ROOT = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
 const OUT_DIR = join(ROOT, ".tmp", "dev-function");
 const PORT = Number(process.env.DEV_FUNCTION_PORT) || 3000; // 3000 — под vite proxy
 
@@ -105,8 +106,8 @@ function installFakeUpstash() {
   console.warn("[dev-function] Upstash-заглушка активна (in-memory; история до рестарта адаптера)");
 }
 
-// ── Компиляция: вход один — api/bot.ts, импорты в lib/ tsc подтягивает сам
-// (каталог «lib» как root file tsc 7 не резолвит). --ignoreConfig обязателен:
+// ── Компиляция: вход один — api/bot.ts, импорты в bot/ tsc подтягивает сам
+// (каталог «bot» как root file tsc 7 не резолвит). --ignoreConfig обязателен:
 // иначе tsc 7 ошибкой TS5112 требует его при файлах на CLI.
 function compile() {
   rmSync(OUT_DIR, { recursive: true, force: true });
@@ -140,8 +141,16 @@ function compile() {
   writeFileSync(join(OUT_DIR, "package.json"), '{"type":"module"}\n');
   // Контент промта: tsc трясёт только .ts-импорты; json/md в артефакт
   // попадают только явным копированием (шаг «Проверки до пуша» из плана).
-  cpSync(join(ROOT, "lib", "knowledge.json"), join(OUT_DIR, "lib", "knowledge.json"));
-  cpSync(join(ROOT, "lib", "prompts"), join(OUT_DIR, "lib", "prompts"), { recursive: true });
+  // Контент промта: tsc трясёт только .ts-импорты; json/md в артефакт
+  // попадают только явным копированием — кладём рядом со скомпилированным
+  // bot/brain/prompt.js, откуда он читается литеральным new URL.
+  cpSync(
+    join(ROOT, "bot", "brain", "knowledge.json"),
+    join(OUT_DIR, "bot", "brain", "knowledge.json"),
+  );
+  cpSync(join(ROOT, "bot", "brain", "prompts"), join(OUT_DIR, "bot", "brain", "prompts"), {
+    recursive: true,
+  });
 }
 
 // ── Конвертация node req ↔ Request / Response ↔ node res ───────────

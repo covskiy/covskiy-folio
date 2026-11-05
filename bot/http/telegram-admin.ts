@@ -1,8 +1,8 @@
 import process from "node:process";
-import { pingLlm } from "./brain.js";
-import { systemPrompt } from "./prompt.js";
-import { ping as pingRedis } from "./store.js";
-import { getWebhookInfo, setWebhook, type TgWebhookInfo } from "./telegram-api.js";
+import { pingLlm } from "../brain/brain.js";
+import { systemPrompt } from "../brain/prompt.js";
+import { ping as pingRedis } from "../store.js";
+import { getWebhookInfo, setWebhook, type TgWebhookInfo } from "../telegram-api.js";
 
 // Админ-маршрут: регистрация и диагностика Telegram-вебхука, health бота,
 // просмотр собранного промта (шаг 7 плана). Защищён тем же секретом, что и
