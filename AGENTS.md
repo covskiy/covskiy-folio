@@ -69,7 +69,8 @@ LLM — любой OpenAI-совместимый endpoint (`LLM_BASE_URL`, по 
 - Hobby-план, Fluid compute; функции в корневом `api/`, `vercel.json` — только rewrites.
 - Env: `LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL`, Redis — пара `UPSTASH_REDIS_REST_*`
   или `KV_REST_API_URL/TOKEN` от интеграции Marketplace (store.ts понимает оба
-  семейства), `TELEGRAM_BOT_TOKEN`, `TELEGRAM_WEBHOOK_SECRET`.
+  семейства), `TELEGRAM_BOT_TOKEN`, `TELEGRAM_WEBHOOK_SECRET`; опционально
+  `LOG_LEVEL` (дефолт warn — `bot/log.ts`).
   Env запекается в деплой: после правки переменных — Redeploy; `.env.local` наверх
   не синхронизируется (значения — `vercel env add` или дашборд). Грабли платформы —
   [docs/architecture.md](docs/architecture.md) → «Грабли платформы».

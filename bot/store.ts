@@ -1,4 +1,5 @@
 import process from "node:process";
+import { log } from "./log.js";
 
 // Хранилище истории диалогов (вебчат + Telegram) поверх Upstash Redis REST API.
 // Чистый fetch без SDK: REST-эндпоинт у Upstash один, зависимости не нужны,
@@ -43,13 +44,16 @@ function restEnv(): { url: string; token: string } | null {
 // Команда передаётся JSON-массивом в теле POST: значение (JSON истории) может
 // быть длинным и содержать любые символы — в URL-пути ему было бы тесно.
 // Fail-open: любая проблема (нет env, сеть, не 200, битый ответ) даёт null
-// и console.warn — бот обязан отвечать и без Redis, в stateless-режиме.
+// и warn через log — бот обязан отвечать и без Redis, в stateless-режиме.
 async function runCommand(command: unknown[]): Promise<unknown> {
   const env = restEnv();
   if (!env) {
-    // Один warn на вызов, не throw: отсутствие env — нормальный stateless-режим.
-    console.warn(
-      "[store] Upstash Redis не настроен (UPSTASH_REDIS_REST_* / KV_REST_API_URL+TOKEN) — работаю без истории",
+    // Warn с троттлингом, не throw: отсутствие env — нормальный stateless-режим,
+    // без троттлинга этот текст повторялся бы на каждый вопрос.
+    log.warnThrottled(
+      "store",
+      "no-env",
+      "Upstash Redis не настроен (UPSTASH_REDIS_REST_* / KV_REST_API_URL+TOKEN) — работаю без истории",
     );
     return null;
   }
@@ -61,18 +65,26 @@ async function runCommand(command: unknown[]): Promise<unknown> {
       signal: AbortSignal.timeout(REST_TIMEOUT_MS),
     });
     if (!response.ok) {
-      console.warn(`[store] Upstash REST вернул ${response.status} — работаю без истории`);
+      log.warnThrottled(
+        "store",
+        "rest-status",
+        `Upstash REST вернул ${response.status} — работаю без истории`,
+      );
       return null;
     }
     const data = (await response.json()) as { result?: unknown; error?: string };
     if (data.error) {
-      console.warn(`[store] Upstash вернул ошибку (${data.error}) — работаю без истории`);
+      log.warnThrottled(
+        "store",
+        "rest-error",
+        `Upstash вернул ошибку (${data.error}) — работаю без истории`,
+      );
       return null;
     }
     return data.result ?? null;
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
-    console.warn(`[store] Upstash недоступен (${reason}) — работаю без истории`);
+    log.warnThrottled("store", "network", `Upstash недоступен (${reason}) — работаю без истории`);
     return null;
   }
 }

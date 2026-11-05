@@ -651,7 +651,10 @@ curl -sS -X POST "https://covskiy-folio.vercel.app/api/telegram-setup" \
 
 Где: дашборд → проект → Observability → Logs (на Hobby retention 1 час — смотреть
 сразу после воспроизведения) или `npx vercel logs <deployment-url>`. Характерные
-строки (префиксы — по модулям):
+строки (префиксы — по модулям). Уровень по умолчанию — **warn** (деградации и
+ошибки); per-update трейсы и dump'ы — уровень **debug**, видны при env
+`LOG_LEVEL=debug` (на Vercel: `vercel env add LOG_LEVEL production` + Redeploy,
+после диагностики вернуть):
 
 | Строка в логе                                                                                     | Кто пишет / что значит                                                                                                                                             |
 | ------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -659,7 +662,9 @@ curl -sS -X POST "https://covskiy-folio.vercel.app/api/telegram-setup" \
 | `[store] Upstash Redis не настроен (…)`                                                           | `bot/store.ts`: нет env → штатный stateless-режим                                                                                                                  |
 | `[store] Upstash REST вернул …` / `Upstash недоступен (…)` / `Upstash вернул ошибку (…)`          | `bot/store.ts`: Redis не отвечает — бот работает, но без истории (fail-open)                                                                                       |
 | `ENOENT … knowledge.json` или `…prompts/…md`                                                      | Файл контента не попал в артефакт: забыл пуш файла / не упомянул литералом в `bot/brain/prompt.ts` → см. [5.3](#53-изменить-структуру-промта--добавить-файл-часть) |
-| `[telegram-webhook] апдейт от …` / `ответ отправлен в …`                                          | `bot/http/telegram-webhook.ts`: апдейт получен и обработан — норма                                                                                                 |
+| `[telegram-webhook] апдейт от …` / `ответ отправлен в …`                                          | `bot/http/telegram-webhook.ts`: апдейт получен и обработан — норма. **debug** — виден при `LOG_LEVEL=debug`                                                        |
+| `[telegram-admin] getWebhookInfo: {…}`                                                            | `bot/http/telegram-admin.ts`: dump ответа Bot API. **debug** — виден при `LOG_LEVEL=debug`                                                                         |
+| `[telegram-admin] вебхук установлен: …`                                                           | `bot/http/telegram-admin.ts`: setWebhook прошёл. **info** — виден при `LOG_LEVEL=info` и выше                                                                      |
 | `[telegram-webhook] не смог снять клавиатуру (…)`                                                 | Сбой `editMessageText` — некритичная косметика                                                                                                                     |
 | `[telegram-admin] TELEGRAM_WEBHOOK_SECRET не задан в env` / `отклонён запрос с неверным секретом` | `bot/http/telegram-admin.ts`: кто-то стучится в админ-маршрут без секрета (или env потерялся — тогда Redeploy)                                                     |
 | `ERR_MODULE_NOT_FOUND` + 500 на любой `/api/*`                                                    | Забытое расширение `.js` в относительном импорте — см. таблицу типовых поломок ниже                                                                                |

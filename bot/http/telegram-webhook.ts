@@ -1,4 +1,5 @@
 import process from "node:process";
+import { log } from "../log.js";
 import { answer } from "../brain/brain.js";
 import { knowledgeEntries } from "../brain/prompt.js";
 import { appendHistory, clearHistory, getHistory, tgKey } from "../store.js";
@@ -131,7 +132,7 @@ async function handleCallbackQuery(callback: TgCallbackQuery): Promise<void> {
       await editMessageText(message.chat.id, message.message_id, message.text);
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
-      console.warn(`[telegram-webhook] не смог снять клавиатуру (${reason})`);
+      log.warn("telegram-webhook", `не смог снять клавиатуру (${reason})`);
     }
   }
 }
@@ -171,7 +172,10 @@ export async function handleTelegramWebhook(request: Request): Promise<Response>
     try {
       await handleCallbackQuery(update.callback_query);
     } catch (error) {
-      console.error("[telegram-webhook] callback_query:", error);
+      log.error(
+        "telegram-webhook",
+        `callback_query: ${error instanceof Error ? error.message : String(error)}`,
+      );
       // Спиннер всё равно надо погасить, иначе он крутится до таймаута Telegram.
       try {
         await answerCallbackQuery(update.callback_query.id);
@@ -186,15 +190,15 @@ export async function handleTelegramWebhook(request: Request): Promise<Response>
   const message = update.message;
   if (message?.text) {
     try {
-      console.log(`[telegram-webhook] апдейт от ${message.chat.id}: ${message.text.slice(0, 80)}`);
+      log.debug("telegram-webhook", `апдейт от ${message.chat.id}: ${message.text.slice(0, 80)}`);
       if (message.text.startsWith("/")) {
         await handleCommand(message.chat.id, message.text);
       } else {
         await answerAsQuestion(message.chat.id, message.text);
       }
-      console.log(`[telegram-webhook] ответ отправлен в ${message.chat.id}`);
+      log.debug("telegram-webhook", `ответ отправлен в ${message.chat.id}`);
     } catch (error) {
-      console.error("[telegram-webhook]", error);
+      log.error("telegram-webhook", error instanceof Error ? error.message : String(error));
       try {
         await sendMessage(
           message.chat.id,

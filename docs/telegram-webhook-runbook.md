@@ -52,8 +52,10 @@ x-telegram-bot-api-secret-token: <ЗНАЧЕНИЕ_ИЗ_.env.local>
 
 ## 3. Сквозная проверка
 
-Написать боту `/start` в Telegram. В панели Vercel (проект → Logs; на Hobby
-retention 1 час — смотреть сразу) появятся:
+Чтобы трейсы попали в лог, временно задай `LOG_LEVEL=debug` в env Vercel
+(`vercel env add LOG_LEVEL production` + Redeploy; по умолчанию warn — per-update
+строки скрыты), а после проверки верни. Написать боту `/start` в Telegram. В панели
+Vercel (проект → Logs; на Hobby retention 1 час — смотреть сразу) появятся:
 
 ```
 [telegram-admin] getWebhookInfo: {...}

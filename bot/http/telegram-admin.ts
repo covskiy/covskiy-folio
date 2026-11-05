@@ -1,4 +1,5 @@
 import process from "node:process";
+import { log } from "../log.js";
 import { pingLlm } from "../brain/brain.js";
 import { systemPrompt } from "../brain/prompt.js";
 import { ping as pingRedis } from "../store.js";
@@ -48,11 +49,15 @@ export async function handleTelegramAdmin(request: Request): Promise<Response> {
   const secret = process.env.TELEGRAM_WEBHOOK_SECRET;
   if (!secret) {
     // Печатаем только факт поломки конфигурации, не значение секрета.
-    console.error("[telegram-admin] TELEGRAM_WEBHOOK_SECRET не задан в env");
+    log.error("telegram-admin", "TELEGRAM_WEBHOOK_SECRET не задан в env");
     return Response.json({ ok: false, error: "Not Found" }, { status: 404 });
   }
   if (request.headers.get(SECRET_HEADER) !== secret) {
-    console.warn(`[telegram-admin] отклонён запрос с неверным секретом (${request.method})`);
+    log.warnThrottled(
+      "telegram-admin",
+      "bad-secret",
+      `отклонён запрос с неверным секретом (${request.method})`,
+    );
     return Response.json({ ok: false, error: "Not Found" }, { status: 404 });
   }
 
@@ -68,7 +73,7 @@ export async function handleTelegramAdmin(request: Request): Promise<Response> {
       }
       // Без section — историческое поведение: диагностика вебхука.
       const webhook = await getWebhookInfo();
-      console.log("[telegram-admin] getWebhookInfo:", JSON.stringify(webhook));
+      log.debug("telegram-admin", `getWebhookInfo: ${JSON.stringify(webhook)}`);
       return Response.json({ ok: true, webhook });
     }
     if (request.method === "POST") {
@@ -80,14 +85,14 @@ export async function handleTelegramAdmin(request: Request): Promise<Response> {
         // callback_query нужен для кнопок-подсказок на /start (шаг 6 плана).
         allowed_updates: ["message", "callback_query"],
       });
-      console.log(`[telegram-admin] вебхук установлен: ${url}`);
+      log.info("telegram-admin", `вебхук установлен: ${url}`);
       return Response.json({ ok: true, result });
     }
     return Response.json({ ok: false, error: "Method Not Allowed" }, { status: 405 });
   } catch (error) {
     // Ошибку Telegram API отдаём как есть — это диагностика для владельца.
     const reason = error instanceof Error ? error.message : String(error);
-    console.error("[telegram-admin] ошибка Telegram API:", reason);
+    log.error("telegram-admin", `ошибка Telegram API: ${reason}`);
     return Response.json({ ok: false, error: reason }, { status: 502 });
   }
 }

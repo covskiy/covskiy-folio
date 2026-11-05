@@ -1,4 +1,5 @@
 import process from "node:process";
+import { log } from "../log.js";
 import { knowledgeEntries, systemPrompt, type KnowledgeItem } from "./prompt.js";
 // Единое определение сообщения диалога живёт в store.ts — дублировать нельзя.
 import type { ChatMessage } from "../store.js";
@@ -231,7 +232,7 @@ export async function answer(question: string, history: ChatMessage[] = []): Pro
     return { text: await askLlm([...recent, { role: "user", content: question }]), mode: "llm" };
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
-    console.error(`[brain] LLM недоступен (${reason}), отвечаю в dumb-режиме`);
+    log.error("brain", `LLM недоступен (${reason}), отвечаю в dumb-режиме`);
     // Dumb-режим работает по одному вопросу — историю игнорирует сознательно.
     return { text: dumbAnswer(question), mode: "dumb" };
   }
