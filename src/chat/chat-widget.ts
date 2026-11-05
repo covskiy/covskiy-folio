@@ -1,10 +1,24 @@
 import "./chat.css";
-import { askChat, loadHistory, saveHistory, type ChatMessage } from "./chat-api";
+import { askChat, fetchChips, getSessionId, renewSessionId, type ChatChip } from "./chat-api";
 
 const GREETING =
   "Привет! Я справка этого сайта — отвечу на вопросы о владельце. Спроси что-нибудь 🙂";
 const ERROR_TEXT = "Не получилось связаться с сервером. Попробуй ещё раз чуть позже.";
 
+interface BubbleMessage {
+  role: "user" | "assistant";
+  content: string;
+  /** Только у ответов: 'dumb' — офлайн-справка без нейросети */
+  mode?: "llm" | "dumb";
+}
+
+/**
+ * Монтирует плавающий чат-виджет в <body>: кнопка-тумблер, панель с историей
+ * сообщений, чипсами-подсказками и формой отправки. Транскрипт на странице —
+ * только до перезагрузки (история диалога держит сервер в Redis по sessionId
+ * из localStorage, TTL 24 ч); кнопка «Новый диалог» меняет sessionId.
+ * Ошибка сети показывается системным сообщением в чате, виджет не падает.
+ */
 export function mountChatWidget(): void {
   const root = document.createElement("div");
   root.className = "chat";
@@ -13,7 +27,10 @@ export function mountChatWidget(): void {
     <section class="chat__panel" hidden aria-label="Чат-справка">
       <header class="chat__header">
         <span class="chat__title">Справка</span>
-        <button class="chat__close" type="button" aria-label="Закрыть чат">✕</button>
+        <span class="chat__header-actions">
+          <button class="chat__new" type="button" aria-label="Новый диалог" title="Новый диалог">⟳</button>
+          <button class="chat__close" type="button" aria-label="Закрыть чат">✕</button>
+        </span>
       </header>
       <div class="chat__messages" role="log" aria-live="polite"></div>
       <form class="chat__form">
@@ -31,9 +48,13 @@ export function mountChatWidget(): void {
   const formEl = root.querySelector<HTMLFormElement>(".chat__form")!;
   const inputEl = root.querySelector<HTMLInputElement>(".chat__input")!;
 
-  let history: ChatMessage[] = loadHistory();
+  // sessionId переживает перезагрузку (localStorage), сам транскрипт — нет:
+  // контекст диалога держит сервер в Redis (TTL 24ч), перезагрузка → пустой виджет.
+  let sessionId = getSessionId();
   let busy = false;
   let opened = false;
+  let chipsLoaded = false;
+  let chipsEl: HTMLElement | null = null;
 
   function scrollToEnd(): void {
     messagesEl.scrollTop = messagesEl.scrollHeight;
@@ -44,6 +65,11 @@ export function mountChatWidget(): void {
     panelEl.hidden = !open;
     toggleEl.classList.toggle("is-open", open);
     if (open) {
+      // Чипсы — один раз за жизнь страницы, при первом разворачивании.
+      if (!chipsLoaded) {
+        chipsLoaded = true;
+        void renderChips();
+      }
       inputEl.focus();
       scrollToEnd();
     }
@@ -55,7 +81,7 @@ export function mountChatWidget(): void {
     if (event.key === "Escape") setOpened(false);
   });
 
-  function addMessage(message: ChatMessage): void {
+  function addMessage(message: BubbleMessage): void {
     const bubble = document.createElement("div");
     bubble.className = `chat__msg chat__msg--${message.role}`;
 
@@ -84,27 +110,61 @@ export function mountChatWidget(): void {
     return bubble;
   }
 
-  formEl.addEventListener("submit", async (event) => {
-    event.preventDefault();
-    const content = inputEl.value.trim();
-    if (!content || busy) return;
+  async function renderChips(): Promise<void> {
+    // Чипсы уместны только в пустом диалоге: после первого вопроса убираем.
+    if (chipsEl) chipsEl.remove();
+    const chips = await fetchChips();
+    if (chips.length === 0) return;
+    chipsEl = document.createElement("div");
+    chipsEl.className = "chat__chips";
+    for (const chip of chips) {
+      chipsEl.append(renderChip(chip));
+    }
+    messagesEl.append(chipsEl);
+    scrollToEnd();
+  }
 
+  // Клик по чипу = отправить его текст как обычный вопрос.
+  function renderChip(chip: ChatChip): HTMLButtonElement {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "chat__chip";
+    button.textContent = chip.title;
+    button.addEventListener("click", () => {
+      if (!busy) void sendMessage(chip.title);
+    });
+    return button;
+  }
+
+  function showGreeting(): void {
+    addMessage({ role: "assistant", content: GREETING });
+  }
+
+  // Кнопка «новый диалог»: новый sessionId — старый ключ Redis истечёт по TTL.
+  root.querySelector(".chat__new")!.addEventListener("click", () => {
+    if (busy) return;
+    sessionId = renewSessionId();
+    messagesEl.innerHTML = "";
+    chipsEl = null;
+    showGreeting();
+    void renderChips();
+    inputEl.focus();
+  });
+
+  async function sendMessage(content: string): Promise<void> {
     busy = true;
-    inputEl.value = "";
 
-    const userMessage: ChatMessage = { role: "user", content };
-    history.push(userMessage);
-    saveHistory(history);
+    const userMessage: BubbleMessage = { role: "user", content };
     addMessage(userMessage);
+    // Диалог начался — чипсы-подсказки больше не нужны.
+    chipsEl?.remove();
+    chipsEl = null;
 
     const typing = showTyping();
     try {
-      const { text, mode } = await askChat(history);
+      const { text, mode } = await askChat(sessionId, content);
       typing.remove();
-      const reply: ChatMessage = { role: "assistant", content: text, mode };
-      history.push(reply);
-      saveHistory(history);
-      addMessage(reply);
+      addMessage({ role: "assistant", content: text, mode });
     } catch {
       typing.remove();
       addMessage({ role: "assistant", content: ERROR_TEXT });
@@ -112,12 +172,15 @@ export function mountChatWidget(): void {
       busy = false;
       inputEl.focus();
     }
+  }
+
+  formEl.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const content = inputEl.value.trim();
+    if (!content || busy) return;
+    inputEl.value = "";
+    void sendMessage(content);
   });
 
-  // Восстановить прошлую переписку или показать приветствие (в историю не пишем)
-  if (history.length === 0) {
-    addMessage({ role: "assistant", content: GREETING });
-  } else {
-    history.forEach(addMessage);
-  }
+  showGreeting();
 }

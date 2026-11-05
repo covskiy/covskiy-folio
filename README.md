@@ -8,6 +8,9 @@
 - если LLM недоступен — включается **dumb-режим**: детерминированный поиск по
   параграфам справки, без нейросети и без токенов.
 
+История диалогов (вебчат и Telegram) живёт на сервере — **Upstash Redis**,
+TTL 24 часа; без Redis бот отвечает в stateless-режиме (fail-open).
+
 ## Дерево проекта
 
 ```
@@ -21,17 +24,23 @@ covskiy-folio/
 │  ├─ vite-env.d.ts                         # типы Vite (импорт css и т.п.)
 │  └─ chat/
 │     ├─ chat-widget.ts                     # UI виджета (кнопка → панель, «печатает…»)
-│     ├─ chat-api.ts                        # клиент /api/chat: история в localStorage
+│     ├─ chat-api.ts                        # клиент /api/chat: sessionId в localStorage, чипсы
 │     └─ chat.css                           # стили виджета
 ├─ lib/                                     # СЕРВЕРНАЯ ЛОГИКА (вне api/ — см. docs/architecture.md)
-│  ├─ knowledge.ts                          # ★ СПРАВКА «мозга» — редактируй здесь
+│  ├─ knowledge.json                        # ★ СПРАВКА «мозга» — редактируй здесь
+│  ├─ prompts/                              # разделы system prompt (persona, rules, knowledge)
+│  ├─ prompt.ts                             # сборщик system prompt (md + knowledge.json)
+│  ├─ store.ts                              # история диалогов: Upstash Redis REST, fail-open
 │  ├─ brain.ts                              # answer(): LLM (timeout 15 c) → fallback dumb
-│  ├─ webchat.ts                            # обработчик /api/chat (валидация → brain)
-│  ├─ telegram-webhook.ts                   # обработчик /api/telegram (secret, /start)
-│  └─ telegram-api.ts                       # обёртка Bot API (sendMessage) на fetch
+│  ├─ webchat.ts                            # обработчик /api/chat (валидация → brain → история)
+│  ├─ telegram-webhook.ts                   # обработчик /api/telegram (secret, команды, кнопки)
+│  ├─ telegram-admin.ts                     # админ-маршрут /api/telegram-setup (health, промт, вебхук)
+│  └─ telegram-api.ts                       # обёртка Bot API (sendMessage и др.) на fetch
 ├─ api/
 │  └─ bot.ts                                # ЕДИНСТВЕННАЯ Vercel Function — роутер по pathname
-├─ tests/                                   # unit-тесты (Vitest): brain, webchat, webhook, роутер
+├─ scripts/
+│  └─ dev-function.mjs                      # dev-адаптер функции (замена vercel dev), не деплоится
+├─ tests/                                   # unit-тесты (Vitest): store, brain, webchat, webhook, admin, роутер
 ├─ docs/
 │  ├─ architecture.md                       # как всё устроено и почему именно так
 │  ├─ deploy.md                             # пошаговый деплой: GitHub → Vercel → webhook
@@ -44,24 +53,25 @@ covskiy-folio/
 ├─ .editorconfig                            # единые настройки редакторов (LF, отступы)
 ├─ .gitattributes                           # LF в репо и при checkout — без LF/CRLF-морганий
 ├─ .oxlintrc.json / .oxfmtrc.json           # конфиги линтера и форматтера
-├─ vercel.json                              # rewrites: /api/chat и /api/telegram → /api/bot
+├─ vercel.json                              # rewrites: /api/chat, /api/telegram, /api/telegram-setup → /api/bot
 ├─ vite.config.ts                           # MPA-входы + proxy /api для локалки
 ├─ tsconfig.json                            # строгий TS (фронт + функции + тесты)
-├─ .env.example                             # профиль llama.cpp / Ollama Cloud
+├─ .env.example                             # профили llama.cpp / Ollama Cloud + плейсхолдеры Upstash
 └─ package.json
 ```
 
 ## Команды
 
-| Команда                | Что делает                                                                                  |
-| ---------------------- | ------------------------------------------------------------------------------------------- |
-| `npm run dev`          | vite dev-сервер (5173). Для `/api` параллельно нужен `vercel dev` — см. `docs/local-dev.md` |
-| `npm run build`        | прод-сборка MPA в `dist/`                                                                   |
-| `npm run test`         | unit-тесты (Vitest, без сети — fetch подменяется)                                           |
-| `npm run typecheck`    | строгая проверка типов (`tsc --noEmit`)                                                     |
-| `npm run lint`         | oxlint (Rust-линтер из oxc) по коду проекта                                                 |
-| `npm run format`       | oxfmt — форматирование всех файлов                                                          |
-| `npm run format:check` | проверка форматирования (часть pre-commit хука husky)                                       |
+| Команда                | Что делает                                                                                            |
+| ---------------------- | ----------------------------------------------------------------------------------------------------- |
+| `npm run dev`          | vite dev-сервер (5173). Для `/api` параллельно нужен `npm run dev:function` — см. `docs/local-dev.md` |
+| `npm run dev:function` | локальная функция на node:http (3000): замена сломанного `vercel dev` — см. `docs/local-dev.md`       |
+| `npm run build`        | прод-сборка MPA в `dist/`                                                                             |
+| `npm run test`         | unit-тесты (Vitest, без сети — fetch подменяется)                                                     |
+| `npm run typecheck`    | строгая проверка типов (`tsc --noEmit`)                                                               |
+| `npm run lint`         | oxlint (Rust-линтер из oxc) по коду проекта                                                           |
+| `npm run format`       | oxfmt — форматирование всех файлов                                                                    |
+| `npm run format:check` | проверка форматирования (часть pre-commit хука husky)                                                 |
 
 ## Коммиты
 
@@ -74,23 +84,30 @@ Conventional Commits (`feat:`, `fix:`, `docs:`, `chore:`, …) — провер�
 Задаются на Vercel (Settings → Environment Variables / `vercel env add`) и опционально
 в `.env.local` для локалки. Шаблон — в `.env.example`.
 
-| Переменная                | Зачем                                                             | Пример (прод)            |
-| ------------------------- | ----------------------------------------------------------------- | ------------------------ |
-| `LLM_BASE_URL`            | база OpenAI-совместимого API, к ней добавится `/chat/completions` | `https://ollama.com/v1`  |
-| `LLM_API_KEY`             | Bearer-токен (для llama.cpp не нужен)                             | ключ из ollama.com       |
-| `LLM_MODEL`               | имя модели                                                        | `gpt-oss:20b`            |
-| `TELEGRAM_BOT_TOKEN`      | токен бота от @BotFather                                          | `123456:ABC-…`           |
-| `TELEGRAM_WEBHOOK_SECRET` | секрет для проверки запросов webhook                              | длинная случайная строка |
+| Переменная                 | Зачем                                                             | Пример (прод)            |
+| -------------------------- | ----------------------------------------------------------------- | ------------------------ |
+| `LLM_BASE_URL`             | база OpenAI-совместимого API, к ней добавится `/chat/completions` | `https://ollama.com/v1`  |
+| `LLM_API_KEY`              | Bearer-токен (для llama.cpp не нужен)                             | ключ из ollama.com       |
+| `LLM_MODEL`                | имя модели                                                        | `gpt-oss:20b`            |
+| `UPSTASH_REDIS_REST_URL`   | REST-эндпоинт Upstash Redis (память диалогов)                     | `https://….upstash.io`   |
+| `UPSTASH_REDIS_REST_TOKEN` | Bearer-токен того же REST API                                     | длинный токен из Upstash |
+| `TELEGRAM_BOT_TOKEN`       | токен бота от @BotFather                                          | `123456:ABC-…`           |
+| `TELEGRAM_WEBHOOK_SECRET`  | секрет для проверки запросов webhook                              | длинная случайная строка |
 
 Без `LLM_*` проект полностью работоспособен — просто всегда отвечает dumb-режимом.
+Без `UPSTASH_*` — тоже, но без памяти диалога (stateless, fail-open).
 
 ## Обновление справки
 
-Весь «интеллект» бота и чата описан текстом в [`lib/knowledge.ts`](lib/knowledge.ts):
-поменял параграфы → `git push` → автодеплой → и сайт, и бот отвечают по-новому.
+Справка — [`lib/knowledge.json`](lib/knowledge.json) (массив `{title, text}`),
+system prompt — [`lib/prompts/`](lib/prompts). Поменял текст → `git push` →
+автодеплой → и сайт, и бот отвечают по-новому. История диалогов живёт в
+Upstash Redis и на контент не влияет: она истечёт по TTL сама (24 часа) или
+очистится командой `/reset`.
 
 ## Дальше
 
+- Мануал владельца (контент, дебаг, llama.cpp) — [docs/manual.md](docs/manual.md)
 - Как это работает внутри — [docs/architecture.md](docs/architecture.md)
 - Первый деплой — [docs/deploy.md](docs/deploy.md)
 - Локалка и llama.cpp — [docs/local-dev.md](docs/local-dev.md)

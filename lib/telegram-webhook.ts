@@ -1,15 +1,158 @@
 import process from "node:process";
 import { answer } from "./brain.js";
-import { sendMessage, type TgMessage } from "./telegram-api.js";
+import { knowledgeEntries } from "./prompt.js";
+import { appendHistory, clearHistory, getHistory, tgKey } from "./store.js";
+import {
+  answerCallbackQuery,
+  editMessageText,
+  sendMessage,
+  type TgInlineKeyboardMarkup,
+  type TgMessage,
+} from "./telegram-api.js";
 
 const SECRET_HEADER = "x-telegram-bot-api-secret-token";
 
-const WELCOME_TEXT = "Привет! Я справочный бот этого сайта. Задай вопрос — попробую ответить.";
+const WELCOME_TEXT = [
+  "Привет! Я справочный бот этого сайта — отвечу на вопросы обо мне, моих услугах и контактах.",
+  "Задай вопрос текстом или нажми кнопку ниже.",
+].join("\n");
 
-interface TgUpdate {
+const HELP_TEXT = [
+  "Что я умею:",
+  "• отвечаю на вопросы — по справке этого сайта, с учётом истории диалога;",
+  "• /about — коротко о владельце;",
+  "• /reset — начать новый диалог (очистить историю);",
+  "• /help — этот список.",
+].join("\n");
+
+const RESET_DONE_TEXT = "История диалога очищена — начинаем с чистого листа.";
+
+const UNKNOWN_COMMAND_TEXT = "Не знаю такую команду. Набери /help — покажу, что умею.";
+
+const CALLBACK_ERROR_TEXT = "Кнопка устарела. Набери /start — дам свежие подсказки.";
+
+// На /start — первые 3 элемента справки, те же темы, что чипсы вебчата.
+const START_BUTTONS_COUNT = 3;
+
+interface TgCallbackQuery {
+  id: string;
+  data?: string;
   message?: TgMessage;
 }
 
+interface TgUpdate {
+  message?: TgMessage;
+  callback_query?: TgCallbackQuery;
+}
+
+// callback_data ограничен 64 байтами, поэтому кнопка несёт только индекс,
+// а вопрос восстанавливается из справки по номеру (те же темы, что чипсы сайта).
+function startKeyboard(): TgInlineKeyboardMarkup {
+  const buttons = knowledgeEntries()
+    .slice(0, START_BUTTONS_COUNT)
+    .map((item, index) => ({ text: item.title, callback_data: `ask:${index}` }));
+  return { inline_keyboard: buttons.map((button) => [button]) };
+}
+
+// Единый поток для свободного текста и нажатой кнопки: история из Redis →
+// ответ brain → пара вопрос/ответ обратно в историю. Fail-open store:
+// без Redis бот всё равно отвечает, просто без контекста.
+async function answerAsQuestion(chatId: number, question: string): Promise<void> {
+  const key = tgKey(chatId);
+  const history = await getHistory(key);
+  const { text: reply } = await answer(question, history);
+  await appendHistory(key, [
+    { role: "user", content: question },
+    { role: "assistant", content: reply },
+  ]);
+  await sendMessage(chatId, reply);
+}
+
+// /about берём из справки: элемент с заголовком «Кто я». Заголовок может
+// переименовать сам владелец (контент правится в knowledge.json без правки
+// кода), поэтому fallback — первый элемент: команда обязана осмысленно
+// отвечать при любой правке контента.
+async function aboutText(): Promise<string> {
+  const entries = knowledgeEntries();
+  const about = entries.find((item) => item.title === "Кто я") ?? entries[0];
+  return about?.text ?? "Информация о владельце пока не заполнена.";
+}
+
+// Команды не пишутся в историю: это действия интерфейса, а не реплики
+// диалога — иначе они засоряли бы контекст LLM.
+async function handleCommand(chatId: number, text: string): Promise<void> {
+  // /start@BotName и лишние аргументы сводим к имени команды.
+  const command = (text.slice(1).split(/\s+/)[0] ?? "").split("@")[0].toLowerCase();
+  switch (command) {
+    case "start":
+      await sendMessage(chatId, WELCOME_TEXT, startKeyboard());
+      return;
+    case "help":
+      await sendMessage(chatId, HELP_TEXT);
+      return;
+    case "reset":
+      await clearHistory(tgKey(chatId));
+      await sendMessage(chatId, RESET_DONE_TEXT);
+      return;
+    case "about":
+      await sendMessage(chatId, await aboutText());
+      return;
+    default:
+      await sendMessage(chatId, UNKNOWN_COMMAND_TEXT);
+  }
+}
+
+async function handleCallbackQuery(callback: TgCallbackQuery): Promise<void> {
+  const match = /^ask:(\d+)$/.exec(callback.data ?? "");
+  const entries = knowledgeEntries();
+  const index = match ? Number(match[1]) : Number.NaN;
+  const entry = Number.isInteger(index) && index >= 0 ? entries[index] : undefined;
+
+  if (!entry) {
+    // Битый формат или индекс вне диапазона: гасим спиннер с пояснением,
+    // историю и чат не трогаем.
+    await answerCallbackQuery(callback.id, CALLBACK_ERROR_TEXT);
+    return;
+  }
+
+  // Спиннер гасим сразу: пользователь не должен ждать LLM с «часиками».
+  await answerCallbackQuery(callback.id);
+
+  const message = callback.message;
+  if (!message) return; // ответить некуда — не наш сценарий, апдейт просто отброшен
+
+  // Нажатие кнопки обрабатываем как обычный вопрос (с историей).
+  await answerAsQuestion(message.chat.id, entry.title);
+
+  // Кнопка одноразовая: снимаем клавиатуру со старого сообщения /start,
+  // чтобы повторные нажатия не засоряли диалог. Косметика — сбой не критичен.
+  if (message.text !== undefined) {
+    try {
+      await editMessageText(message.chat.id, message.message_id, message.text);
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      console.warn(`[telegram-webhook] не смог снять клавиатуру (${reason})`);
+    }
+  }
+}
+
+/**
+ * Обработчик /api/telegram — все апдейты Telegram-бота: свободный текст → ответ
+ * «мозга» с серверной историей, команды /start /help /reset /about, нажатия
+ * inline-кнопок (callback_data вида ask:{index}).
+ *
+ * Auth: заголовок x-telegram-bot-api-secret-token должен совпасть с
+ * TELEGRAM_WEBHOOK_SECRET — иначе 401. Всегда возвращает 2xx после обработки,
+ * иначе Telegram будет повторять доставку update; ошибки обработчика глотаются
+ * с логом (пользователю уходит сообщение о неполадках, спиннер кнопки гасится).
+ * Апдейты без текста (фото, стикеры) грациозно игнорируются.
+ *
+ * Env: TELEGRAM_WEBHOOK_SECRET (без него все запросы — 401); через lib —
+ * TELEGRAM_BOT_TOKEN, UPSTASH_REDIS_REST_URL/TOKEN (fail-open без Redis).
+ *
+ * @param {Request} request - Входящий запрос функции.
+ * @returns {Promise<Response>} JSON {ok:true}; 401 при неверном/отсутствующем секрете.
+ */
 export async function handleTelegramWebhook(request: Request): Promise<Response> {
   // Проверяем, что запрос пришёл действительно от Telegram (секрет задаётся в setWebhook)
   const expected = process.env.TELEGRAM_WEBHOOK_SECRET;
@@ -24,14 +167,31 @@ export async function handleTelegramWebhook(request: Request): Promise<Response>
     return Response.json({ ok: true });
   }
 
+  if (update.callback_query) {
+    try {
+      await handleCallbackQuery(update.callback_query);
+    } catch (error) {
+      console.error("[telegram-webhook] callback_query:", error);
+      // Спиннер всё равно надо погасить, иначе он крутится до таймаута Telegram.
+      try {
+        await answerCallbackQuery(update.callback_query.id);
+      } catch {
+        // Уже отвечен или сеть недоступна — не критично.
+      }
+    }
+    // Telegram ждёт 2xx, иначе будет повторять отправку update
+    return Response.json({ ok: true });
+  }
+
   const message = update.message;
   if (message?.text) {
     try {
       console.log(`[telegram-webhook] апдейт от ${message.chat.id}: ${message.text.slice(0, 80)}`);
-      const reply = message.text.startsWith("/start")
-        ? WELCOME_TEXT
-        : (await answer([{ role: "user", content: message.text }])).text;
-      await sendMessage(message.chat.id, reply);
+      if (message.text.startsWith("/")) {
+        await handleCommand(message.chat.id, message.text);
+      } else {
+        await answerAsQuestion(message.chat.id, message.text);
+      }
       console.log(`[telegram-webhook] ответ отправлен в ${message.chat.id}`);
     } catch (error) {
       console.error("[telegram-webhook]", error);
@@ -45,6 +205,8 @@ export async function handleTelegramWebhook(request: Request): Promise<Response>
       }
     }
   }
+  // Сообщение без текста (фото, стикеры, …) грациозно игнорируем:
+  // отвечать нечего, а пинг-понг «напиши текстом» только засоряет чат.
 
   // Telegram ждёт 2xx, иначе будет повторять отправку update
   return Response.json({ ok: true });

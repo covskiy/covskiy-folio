@@ -1,11 +1,49 @@
 import process from "node:process";
-import { getWebhookInfo, setWebhook } from "./telegram-api.js";
+import { pingLlm } from "./brain.js";
+import { systemPrompt } from "./prompt.js";
+import { ping as pingRedis } from "./store.js";
+import { getWebhookInfo, setWebhook, type TgWebhookInfo } from "./telegram-api.js";
 
-// Админ-маршрут: регистрация и диагностика Telegram-вебхука.
-// Защищён тем же секретом, что и вебхук; без секрета отвечаем 404,
-// чтобы не подтверждать существование маршрута.
+// Админ-маршрут: регистрация и диагностика Telegram-вебхука, health бота,
+// просмотр собранного промта (шаг 7 плана). Защищён тем же секретом, что и
+// вебхук; без секрета отвечаем 404, чтобы не подтверждать существование маршрута.
 const SECRET_HEADER = "x-telegram-bot-api-secret-token";
 
+type TelegramHealth = { ok: true; webhook: TgWebhookInfo } | { ok: false; error: string };
+
+async function telegramHealth(): Promise<TelegramHealth> {
+  try {
+    return { ok: true, webhook: await getWebhookInfo() };
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    return { ok: false, error: reason };
+  }
+}
+
+// Пункты health независимы: считаем параллельно, ошибка одного (уже пойманная
+// внутри ping-функций) не влияет на остальные.
+async function healthResponse(): Promise<Response> {
+  const [llm, redis, telegram] = await Promise.all([pingLlm(), pingRedis(), telegramHealth()]);
+  return Response.json({ ok: true, llm, redis, telegram });
+}
+
+/**
+ * Обработчик /api/telegram-setup — админ-маршрут владельца:
+ * GET без section — диагностика вебхука (getWebhookInfo),
+ * GET ?section=health — health LLM, Redis и Telegram (параллельно),
+ * GET ?section=prompt — собранный system-промт,
+ * POST — установка вебхука на текущий origin (setWebhook).
+ *
+ * Auth: секрет в заголовке x-telegram-bot-api-secret-token; без
+ * TELEGRAM_WEBHOOK_SECRET или при несовпадении — 404 (не 401: маршрут
+ * не подтверждает своё существование). Ошибка Telegram API — 502 с текстом.
+ *
+ * Env: TELEGRAM_WEBHOOK_SECRET (обязателен); для health — LLM_BASE_URL/
+ * LLM_MODEL/LLM_API_KEY и UPSTASH_REDIS_REST_URL/TOKEN.
+ *
+ * @param {Request} request - Входящий запрос функции.
+ * @returns {Promise<Response>} JSON; коды: 200, 404 (секрет отсутствует/неверен), 405, 502.
+ */
 export async function handleTelegramAdmin(request: Request): Promise<Response> {
   const secret = process.env.TELEGRAM_WEBHOOK_SECRET;
   if (!secret) {
@@ -20,6 +58,15 @@ export async function handleTelegramAdmin(request: Request): Promise<Response> {
 
   try {
     if (request.method === "GET") {
+      // Ветвление по query-параметру: маршрут исторически адресуется одним
+      // путём (/api/telegram-setup), подпути через vercel.json не заводим.
+      const section = new URL(request.url).searchParams.get("section");
+      if (section === "health") return await healthResponse();
+      if (section === "prompt") {
+        // Под секретом можно целиком; справка уже внутри промта.
+        return Response.json({ ok: true, prompt: systemPrompt() });
+      }
+      // Без section — историческое поведение: диагностика вебхука.
       const webhook = await getWebhookInfo();
       console.log("[telegram-admin] getWebhookInfo:", JSON.stringify(webhook));
       return Response.json({ ok: true, webhook });
@@ -30,7 +77,8 @@ export async function handleTelegramAdmin(request: Request): Promise<Response> {
       const result = await setWebhook({
         url,
         secret_token: secret,
-        allowed_updates: ["message"],
+        // callback_query нужен для кнопок-подсказок на /start (шаг 6 плана).
+        allowed_updates: ["message", "callback_query"],
       });
       console.log(`[telegram-admin] вебхук установлен: ${url}`);
       return Response.json({ ok: true, result });

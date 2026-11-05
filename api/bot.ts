@@ -7,6 +7,15 @@ import { handleTelegramAdmin } from "../lib/telegram-admin.js";
 // Единственная Vercel Function проекта: маршрутизация по пути запроса.
 // /api/chat и /api/telegram попадают сюда через rewrites из vercel.json,
 // а общий код живёт в lib/ (вне api/ — так Vercel собирает одну функцию).
+/**
+ * Fetch-обработчик единственной Vercel Function: маршрутизация по pathname.
+ *
+ * @param {Request} request - Входящий запрос.
+ * @returns {Promise<Response>} Ответ соответствующего обработчика из lib/:
+ *   /api/chat → webchat, /api/telegram → telegram-webhook,
+ *   /api/telegram-setup → telegram-admin; неизвестный путь —
+ *   404 JSON {ok:false, error:"Not Found"}.
+ */
 export default {
   async fetch(request: Request): Promise<Response> {
     const { pathname } = new URL(request.url);

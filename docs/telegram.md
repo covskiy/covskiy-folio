@@ -32,7 +32,8 @@ curl -X POST https://covskiy-folio.vercel.app/api/telegram-setup \
 ```
 
 Маршрут сам подставит `url` вебхука (из origin запроса) и `secret_token`
-(из env Vercel), `allowed_updates: ["message"]`. Ожидаемый ответ:
+(из env Vercel), `allowed_updates: ["message", "callback_query"]` — второе нужно
+для inline-кнопок на `/start`. Ожидаемый ответ:
 `{"ok":true,"result":true,"description":"Webhook was set"}`.
 
 Проверка (тем же адресом, метод GET):
@@ -55,14 +56,20 @@ curl "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/setWebhook" \
 ## 4. Как это работает
 
 ```
-Пользователь пишет боту
+Пользователь пишет боту (или жмёт inline-кнопку на /start)
   → Telegram делает POST на /api/telegram
       (заголовок X-Telegram-Bot-Api-Secret-Token = наш секрет)
   → api/bot.ts → lib/telegram-webhook.ts
-      сверяет секрет → /start? приветствие : brain.answer()
-  → sendMessage обратно в чат
+      сверяет секрет
+      → команда (/start, /help, /reset, /about)? — ответ без записи в историю
+      → иначе: история из Redis (chat:tg:{chat_id}) → brain.answer()
+        → пара вопрос/ответ в историю → sendMessage
   → функция отвечает Telegram 200 (иначе приедет повтор)
 ```
+
+История диалога живёт в Upstash Redis (`chat:tg:{chat_id}`, TTL 24 часа) —
+контекст сохраняется между сообщениями; `/reset` очищает её сразу. Fail-open:
+без Redis бот отвечает, просто без контекста.
 
 Один бот обслуживает неограниченное число чатов: ответ уходит в
 `update.message.chat.id` — тот чат, откуда пришло сообщение.

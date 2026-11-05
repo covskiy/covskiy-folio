@@ -50,7 +50,8 @@ LLM — любой OpenAI-совместимый endpoint (`LLM_BASE_URL`, по 
   конфиги в корне (`.oxfmtrc.json`, `.oxlintrc.json`).
 - Файлы — LF (`.gitattributes`, `.editorconfig`); не менять переводы строк руками.
 - Комментарии объясняют «почему», а не «что»; пользовательские тексты — по-русски.
-- Контент справки бота правится в `lib/knowledge.ts`, не в коде `lib/brain.ts`.
+- Контент справки бота правится в `lib/knowledge.json` (промт — в
+  `lib/prompts/*.md`), не в коде `lib/brain.ts`.
 - Функция одна: `api/bot.ts` — только роутер по pathname; новая логика — в `lib/`,
   новый маршрут — ветка switch + обработчик в `lib/` (+ rewrites в `vercel.json`).
 - Относительные импорты в `api/` и `lib/` — **только с расширением `.js`** (`"./brain.js"`).
@@ -65,7 +66,9 @@ LLM — любой OpenAI-совместимый endpoint (`LLM_BASE_URL`, по 
 ## Платформа (Vercel)
 
 - Hobby-план, Fluid compute; функции в корневом `api/`, `vercel.json` — только rewrites.
-- Env: `LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_WEBHOOK_SECRET`.
+- Env: `LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL`, Redis — пара `UPSTASH_REDIS_REST_*`
+  или `KV_REST_API_URL/TOKEN` от интеграции Marketplace (store.ts понимает оба
+  семейства), `TELEGRAM_BOT_TOKEN`, `TELEGRAM_WEBHOOK_SECRET`.
   Env запекается в деплой: после правки переменных — Redeploy; `.env.local` наверх
   не синхронизируется (значения — `vercel env add` или дашборд). Грабли платформы —
   [docs/architecture.md](docs/architecture.md) → «Грабли платформы».

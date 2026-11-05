@@ -48,6 +48,14 @@ npx vercel env add TELEGRAM_BOT_TOKEN production  # токен от @BotFather
 npx vercel env add TELEGRAM_WEBHOOK_SECRET production
 ```
 
+Базу Upstash Redis удобнее создать через Vercel Marketplace (Project → Storage →
+Create Database → Upstash Redis, план Free): интеграция сама инжектит пять
+переменных `KV_*` / `REDIS_URL` во все окружения — добавлять ничего руками не
+нужно, store.ts берёт из них пару `KV_REST_API_URL/TOKEN`. Если база создана
+напрямую на upstash.com — добавь пару `UPSTASH_REDIS_REST_URL/TOKEN` командами
+`vercel env add` выше (код понимает оба семейства, приоритет у `UPSTASH_*`).
+Без Redis бот работает, но без памяти диалога (stateless, fail-open).
+
 После добавления переменных сделай **Redeploy** (Deployments → ⋯ → Redeploy),
 чтобы они попали в работающую функцию.
 
@@ -83,7 +91,8 @@ curl -X POST https://covskiy-folio.vercel.app/api/telegram-setup \
 
 - `https://<project>.vercel.app/` — открывается сайт; чат в правом нижнем углу
   отвечает (бейдж «офлайн-справка», если LLM ещё не настроен).
-- `https://<project>.vercel.app/api/chat` (GET) → `{"ok":true,"service":"webchat"}`.
+- `https://<project>.vercel.app/api/chat` (GET) →
+  `{"ok":true,"service":"webchat","chips":[…]}` (chips — первые 3 заголовка справки).
 - Написать боту в Telegram `/start` → приветствие; вопрос → ответ.
 - Логи функции: `npx vercel logs <deployment-url>` или дашборд → Observability.
 
@@ -94,7 +103,8 @@ git add . && git commit -m "…" && git push
 # → Vercel собирает и деплоит автоматически; PR'ы получают preview-URL
 ```
 
-Обновил справку в `lib/knowledge.ts` — просто пуш: сайт и бот отвечают по-новому.
+Обновил справку в `lib/knowledge.json` (или промт в `lib/prompts/*.md`) — просто
+пуш: сайт и бот отвечают по-новому.
 
 ## Если что-то не так
 
