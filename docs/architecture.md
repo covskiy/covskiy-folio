@@ -156,11 +156,12 @@ api.telegram.org (у части провайдеров заблокирован)
 
 ## Локальная разработка
 
-`vercel dev` на этой машине сломан (`EPERM: symlink`, см. «Грабли платформы»),
+`vercel dev` на этой машине не годится: после включения Windows Developer Mode он
+стартует, но dev-роутер не доводит rewrites до функции (см. «Грабли платформы»),
 поэтому функцию поднимает dev-адаптер:
 
 ```bash
-npm run dev:function   # node:http на 3000: tsc api/ + копия контента + .env.local
+npm run dev:function   # node:http на 3000: tsc api/bot.ts + bot/ + контент + .env.local
 npm run dev            # vite (5173), /api проксируется на 3000
 ```
 

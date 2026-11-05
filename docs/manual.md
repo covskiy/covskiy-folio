@@ -63,7 +63,7 @@ Vercel Function (`api/bot.ts`, роутер по pathname), которая за 
 | Файл                                 | Роль                                                                                                                                               |
 | ------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `api/bot.ts`                         | Единственная Vercel Function — роутер по pathname: `/api/chat`, `/api/telegram`, `/api/telegram-setup`, иначе 404 JSON                             |
-| `bot/brain/brain.ts`                 | «Мозг»: `answer()` — LLM с таймаутом 15 с, при любой ошибке dumb-поиск по справке; `pingLlm()` для health                                          |
+| `bot/brain/brain.ts`                 | «Мозг»: `answer()` — LLM с таймаутом `LLM_TIMEOUT_MS` (env, дефолт 15 с), при любой ошибке dumb-поиск по справке; `pingLlm()` для health           |
 | `bot/brain/prompt.ts`                | Сборщик system-промта: `systemPrompt()` склеивает `bot/brain/prompts/*.md` и вставляет справку вместо `{{KNOWLEDGE}}`; `knowledgeEntries()` — JSON |
 | `bot/brain/knowledge.json`           | ★ Справка бота — массив `{title, text}`. Единственное место правки контента                                                                        |
 | `bot/brain/prompts/`                 | Разделы промта готовым текстом: `00-persona.md`, `10-rules.md`, `20-knowledge.md`                                                                  |
@@ -76,7 +76,7 @@ Vercel Function (`api/bot.ts`, роутер по pathname), которая за 
 | `src/chat/chat-widget.ts`            | UI виджета: кнопка-тумблер, панель, «печатает…», бейдж «офлайн-справка», чипсы, кнопка «новый диалог»                                              |
 | `src/chat/chat.css`                  | Стили виджета                                                                                                                                      |
 | `bot/dev/dev-function.mjs`           | Dev-адаптер функции (замена сломанного `vercel dev`): компиляция в `.tmp/dev-function`, контент, `.env.local`, порт 3000                           |
-| `bot/tests/`                         | 64 юнит-теста в 6 файлах (Vitest, сеть замокана) — раздел [10](#10-тесты)                                                                          |
+| `bot/tests/`                         | 69 юнит-тестов в 6 файлах (Vitest, сеть замокана) — раздел [10](#10-тесты)                                                                         |
 | `vercel.json`                        | Только rewrites: `/api/chat`, `/api/telegram`, `/api/telegram-setup` → `/api/bot`                                                                  |
 | `.env.example`                       | Шаблон env: профиль llama.cpp и Ollama Cloud + плейсхолдеры Upstash/Telegram                                                                       |
 | `src/main.ts`, `*.html`, `style.css` | Статика MPA: страницы, монтирование виджета (`mountChatWidget()` в `src/main.ts`)                                                                  |
@@ -85,7 +85,7 @@ Vercel Function (`api/bot.ts`, роутер по pathname), которая за 
 
 | Симптом                                          | Файлы в порядке просмотра                                                                                                                                           |
 | ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Бот отвечает в режиме «офлайн-справка»           | `bot/brain/brain.ts` (env `LLM_BASE_URL`/`LLM_MODEL`, таймаут 15 с) → логи (`[brain]`) → раздел [9.3](#93-mode-dumb-как-симптом)                                    |
+| Бот отвечает в режиме «офлайн-справка»           | `bot/brain/brain.ts` (env `LLM_BASE_URL`/`LLM_MODEL`, таймаут — env `LLM_TIMEOUT_MS`, дефолт 15 с) → логи (`[brain]`) → раздел [9.3](#93-mode-dumb-как-симптом)     |
 | Бот не помнит контекст диалога                   | `bot/store.ts` (env `UPSTASH_*` / `KV_REST_API_*`, TTL) → warn-логи `[store]` → раздел [6](#6-память-диалога-посмотреть-и-почистить-руками)                         |
 | Вебчат не грузит чипсы                           | `bot/http/webchat.ts` (`CHIPS_COUNT`, GET-ветка) → `src/chat/chat-api.ts` (`fetchChips` — молча отдаёт `[]` при не-2xx) → `src/chat/chat-widget.ts` (`renderChips`) |
 | Telegram не отвечает                             | `bot/http/telegram-webhook.ts` + `bot/telegram-api.ts` → вебхук: `GET /api/telegram-setup` → [telegram-webhook-runbook.md](telegram-webhook-runbook.md)             |
@@ -433,7 +433,7 @@ curl -X POST http://127.0.0.1:3000/api/chat \
 ## 8. Локальный llama.cpp (полная инструкция)
 
 Зачем: локальная модель — эксперименты с промтом и справкой без траты токенов и
-без сети..llama.cpp поднимает OpenAI-совместимый сервер, который brain вызывает
+без сети. llama.cpp поднимает OpenAI-совместимый сервер, который brain вызывает
 как обычный провайдер.
 
 ### 8.1 Формат LLM_BASE_URL — сверка с кодом
@@ -529,7 +529,9 @@ LLM_MODEL=my-model
 
 # Память диалогов (Upstash). База из Vercel Marketplace привозит переменные
 # KV_REST_API_URL/TOKEN сама после vercel env pull; для базы с upstash.com
-# вписывай UPSTASH_REDIS_REST_URL/TOKEN. Пусто → stateless (fail-open).
+# вписывай UPSTASH_REDIS_REST_URL/TOKEN. Для тестов без облака — профиль 3
+# из .env.example: UPSTASH_REDIS_REST_URL=http://upstash.fake (in-memory
+# заглушка адаптера). Пусто → stateless (fail-open).
 # UPSTASH_REDIS_REST_URL=
 # UPSTASH_REDIS_REST_TOKEN=
 
@@ -653,7 +655,7 @@ curl -sS -X POST "https://covskiy-folio.vercel.app/api/telegram-setup" \
 
 | Строка в логе                                                                                     | Кто пишет / что значит                                                                                                                                             |
 | ------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `[brain] LLM недоступен (…), отвечаю в dumb-режиме`                                               | `bot/brain/brain.ts`: LLM не настроен / не-2xx / таймаут 15 с / пустой ответ. В скобках — точная причина                                                           |
+| `[brain] LLM недоступен (…), отвечаю в dumb-режиме`                                               | `bot/brain/brain.ts`: LLM не настроен / не-2xx / таймаут `LLM_TIMEOUT_MS` (дефолт 15 с) / пустой ответ. В скобках — точная причина                                 |
 | `[store] Upstash Redis не настроен (…)`                                                           | `bot/store.ts`: нет env → штатный stateless-режим                                                                                                                  |
 | `[store] Upstash REST вернул …` / `Upstash недоступен (…)` / `Upstash вернул ошибку (…)`          | `bot/store.ts`: Redis не отвечает — бот работает, но без истории (fail-open)                                                                                       |
 | `ENOENT … knowledge.json` или `…prompts/…md`                                                      | Файл контента не попал в артефакт: забыл пуш файла / не упомянул литералом в `bot/brain/prompt.ts` → см. [5.3](#53-изменить-структуру-промта--добавить-файл-часть) |
@@ -676,7 +678,8 @@ curl -sS -X POST "https://covskiy-folio.vercel.app/api/telegram-setup" \
    просто «сохранить» мало (раздел [11](#11-деплой-кратко)).
 2. **LLM недоступен** — endpoint отвечает не-2xx или сеть недоступна. Проверь
    health `?section=health` и URL (прод: `https://ollama.com/v1`).
-3. **Таймаут 15 с** — медленный провайдер/модель; локальный llama.cpp — прогрев
+3. **Таймаут** — дефолт 15 с, поднимается env `LLM_TIMEOUT_MS`; медленный
+   провайдер/модель; локальный llama.cpp — прогрев
    (раздел [8.8](#88-грабли-локального-llamacpp)).
 4. **Файлы промта/справки затерялись в артефакте** — `ENOENT` в логах: md/json не
    запушен или путь не литеральный в `bot/brain/prompt.ts` ([5.3](#53-изменить-структуру-промта--добавить-файл-часть)).
@@ -734,16 +737,16 @@ npm run test:watch   # следить за изменениями
 `bot/tests/store.test.ts`: он парсит JSON-массив команды из тела POST и возвращает
 заготовленный Response — именно так проверяется REST-протокол store.
 
-Покрытие — 64 теста в 6 файлах (`bot/tests/`):
+Покрытие — 69 тестов в 6 файлах (`bot/tests/`):
 
-| Файл                                 | Сколько | Что покрывает                                                                                                        |
-| ------------------------------------ | ------- | -------------------------------------------------------------------------------------------------------------------- |
-| `bot/tests/store.test.ts`            | 15      | REST-протокол Upstash (get/set EX/del/ping), ключи `webKey`/`tgKey`, TTL-константа, fail-open, парсинг битой истории |
-| `bot/tests/brain.test.ts`            | 5       | payload в LLM (system+история+вопрос), таймаут/не-2xx → dumb, dumb-поиск, `pingLlm`                                  |
-| `bot/tests/webchat.test.ts`          | 10      | GET-чипсы, валидация sessionId/text (включая границу 2000), поток история→LLM→append, fail-open                      |
-| `bot/tests/telegram-webhook.test.ts` | 18      | секрет-заголовок, команды (и то, что они не пишут историю), свободный текст, callback `ask:{n}`, 2xx при ошибках     |
-| `bot/tests/telegram-admin.test.ts`   | 12      | 404 без секрета, health/prompt/вебхук по `section`, POST setWebhook, 502 при ошибке Telegram                         |
-| `tests/api-router.test.ts`           | 4       | роутинг `api/bot.ts` по pathname и 404 на неизвестный путь                                                           |
+| Файл                                 | Сколько | Что покрывает                                                                                                                                                 |
+| ------------------------------------ | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `bot/tests/store.test.ts`            | 18      | REST-протокол Upstash (get/set EX/del/ping), ключи `webKey`/`tgKey`, TTL-константа, fail-open, парсинг битой истории, оба семейства env-имён (UPSTASH_*/KV_*) |
+| `bot/tests/brain.test.ts`            | 7       | payload в LLM (system+история+вопрос), env-таймаут и его перекрытие, не-2xx → dumb, dumb-поиск                                                                |
+| `bot/tests/webchat.test.ts`          | 10      | GET-чипсы, валидация sessionId/text (включая границу 2000), поток история→LLM→append, fail-open                                                               |
+| `bot/tests/telegram-webhook.test.ts` | 18      | секрет-заголовок, команды (и то, что они не пишут историю), свободный текст, callback `ask:{n}`, 2xx при ошибках                                              |
+| `bot/tests/telegram-admin.test.ts`   | 12      | 404 без секрета, health/prompt/вебхук по `section`, POST setWebhook, 502 при ошибке Telegram                                                                  |
+| `bot/tests/api-router.test.ts`       | 4       | роутинг `api/bot.ts` по pathname и 404 на неизвестный путь                                                                                                    |
 
 Добавить тест под свой сценарий: открой ближайший по теме файл, скопируй
 соседний `it(...)` и замени стаб/ассерты. Для store-сценариев бери `stubUpstash`

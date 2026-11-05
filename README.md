@@ -27,25 +27,30 @@ covskiy-folio/
 │     ├─ chat-api.ts                        # клиент /api/chat: sessionId в localStorage, чипсы
 │     └─ chat.css                           # стили виджета
 ├─ bot/                                     # СЕРВЕРНАЯ ЛОГИКА (вне api/ — см. docs/architecture.md)
-│  ├─ knowledge.json                        # ★ СПРАВКА «мозга» — редактируй здесь
-│  ├─ prompts/                              # разделы system prompt (persona, rules, knowledge)
-│  ├─ prompt.ts                             # сборщик system prompt (md + knowledge.json)
+│  ├─ http/                                 # обработчики маршрутов
+│  │  ├─ webchat.ts                         # /api/chat (валидация → brain → история)
+│  │  ├─ telegram-webhook.ts                # /api/telegram (secret, команды, кнопки)
+│  │  └─ telegram-admin.ts                  # /api/telegram-setup (health, промт, вебхук)
+│  ├─ telegram-api.ts                       # обёртка Bot API (sendMessage и др.) на fetch
+│  ├─ brain/                                # «мозг» + контент
+│  │  ├─ brain.ts                           # answer(): LLM (env LLM_TIMEOUT_MS, дефолт 15 c) → dumb
+│  │  ├─ prompt.ts                          # сборщик system prompt (md + knowledge.json)
+│  │  ├─ knowledge.json                     # ★ СПРАВКА «мозга» — редактируй здесь
+│  │  └─ prompts/                           # разделы system prompt (persona, rules, knowledge)
 │  ├─ store.ts                              # история диалогов: Upstash Redis REST, fail-open
-│  ├─ brain.ts                              # answer(): LLM (timeout 15 c) → fallback dumb
-│  ├─ webchat.ts                            # обработчик /api/chat (валидация → brain → история)
-│  ├─ telegram-webhook.ts                   # обработчик /api/telegram (secret, команды, кнопки)
-│  ├─ telegram-admin.ts                     # админ-маршрут /api/telegram-setup (health, промт, вебхук)
-│  └─ telegram-api.ts                       # обёртка Bot API (sendMessage и др.) на fetch
+│  ├─ tests/                                # unit-тесты (Vitest): brain, store, webchat, webhook, admin, роутер
+│  └─ dev/
+│     └─ dev-function.mjs                   # dev-адаптер (замена vercel dev) + заглушка Upstash, не деплоится
 ├─ api/
 │  └─ bot.ts                                # ЕДИНСТВЕННАЯ Vercel Function — роутер по pathname
-├─ scripts/
-│  └─ dev-function.mjs                      # dev-адаптер функции (замена vercel dev), не деплоится
-├─ tests/                                   # unit-тесты (Vitest): store, brain, webchat, webhook, admin, роутер
 ├─ docs/
 │  ├─ architecture.md                       # как всё устроено и почему именно так
+│  ├─ manual.md                             # мануал владельца: контент, дебаг, llama.cpp
 │  ├─ deploy.md                             # пошаговый деплой: GitHub → Vercel → webhook
 │  ├─ local-dev.md                          # локальная разработка, llama.cpp, тесты
-│  └─ telegram.md                           # создание бота и настройка webhook
+│  ├─ telegram.md                           # создание бота и настройка webhook
+│  └─ telegram-webhook-runbook.md           # регистрация вебхука (runbook)
+├─ tasks/                                   # план рефакторинга (история решений)
 ├─ .agents/skills/ + skills-lock.json       # официальные агент-скилы Vercel (skills.sh)
 ├─ AGENTS.md                                # правила для агентов: команды, коммиты, цепочка git
 ├─ .husky/                                  # pre-commit (format→lint→types→test) + commit-msg (commitlint)
@@ -95,7 +100,9 @@ Conventional Commits (`feat:`, `fix:`, `docs:`, `chore:`, …) — провер�
 | `TELEGRAM_WEBHOOK_SECRET`  | секрет для проверки запросов webhook                              | длинная случайная строка |
 
 Без `LLM_*` проект полностью работоспособен — просто всегда отвечает dumb-режимом.
-Без `UPSTASH_*` — тоже, но без памяти диалога (stateless, fail-open).
+Без `UPSTASH_*` — тоже, но без памяти диалога (stateless, fail-open). База Upstash,
+созданная через Vercel Marketplace, приезжает парой `KV_REST_API_URL`/`KV_REST_API_TOKEN`
+— store.ts понимает оба семейства имён (см. `.env.example`).
 
 ## Обновление справки
 

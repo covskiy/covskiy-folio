@@ -10,14 +10,15 @@ LLM — любой OpenAI-совместимый endpoint (`LLM_BASE_URL`, по 
 
 ## Команды
 
-| Команда             | Зачем                               |
-| ------------------- | ----------------------------------- |
-| `npm run dev`       | vite (5173), `/api` → proxy на 3000 |
-| `npm run build`     | прод-сборка MPA в `dist/`           |
-| `npm run test`      | Vitest (сеть подменена моками)      |
-| `npm run typecheck` | `tsc --noEmit` (strict)             |
-| `npm run lint`      | oxlint                              |
-| `npm run format`    | oxfmt --write                       |
+| Команда                | Зачем                                                              |
+| ---------------------- | ------------------------------------------------------------------ |
+| `npm run dev`          | vite (5173), `/api` → proxy на 3000                                |
+| `npm run dev:function` | функция локально на 3000 (адаптер `bot/dev/`, env из `.env.local`) |
+| `npm run build`        | прод-сборка MPA в `dist/`                                          |
+| `npm run test`         | Vitest (сеть подменена моками)                                     |
+| `npm run typecheck`    | `tsc --noEmit` (strict)                                            |
+| `npm run lint`         | oxlint                                                             |
+| `npm run format`       | oxfmt --write                                                      |
 
 ## Хуки git (husky)
 
