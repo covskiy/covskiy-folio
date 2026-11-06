@@ -89,6 +89,63 @@ async function runCommand(command: unknown[]): Promise<unknown> {
   }
 }
 
+// Pipeline — массив команд в одном теле POST, ответ — массив {result}/{error}
+// по элементам (у одиночной команды ответ — один объект, поэтому отдельная
+// функция). Лимитер ходит в Redis на каждый запрос, дорожить roundtrip'ом нельзя.
+async function runPipeline(commands: unknown[][]): Promise<(unknown | null)[] | null> {
+  const env = restEnv();
+  if (!env) {
+    // Тот же throttle-ключ, что у runCommand: деградация одна, не дублируем.
+    log.warnThrottled(
+      "store",
+      "no-env",
+      "Upstash Redis не настроен (UPSTASH_REDIS_REST_* / KV_REST_API_URL+TOKEN) — работаю без лимитера",
+    );
+    return null;
+  }
+  try {
+    const response = await fetch(env.url, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${env.token}` },
+      body: JSON.stringify(commands),
+      signal: AbortSignal.timeout(REST_TIMEOUT_MS),
+    });
+    if (!response.ok) {
+      log.warnThrottled(
+        "store",
+        "rest-status",
+        `Upstash REST вернул ${response.status} (pipeline) — работаю без лимитера`,
+      );
+      return null;
+    }
+    const data = (await response.json()) as Array<{ result?: unknown; error?: string }>;
+    if (!Array.isArray(data)) return null;
+    return data.map((item) => (item.error ? null : (item.result ?? null)));
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    log.warnThrottled("store", "network", `Upstash недоступен (${reason}) — работаю без лимитера`);
+    return null;
+  }
+}
+
+/**
+ * Атомарный счётчик для rate-limit'а: INCR + EXPIRE NX одним pipeline.
+ * EXPIRE NX ставит TTL только если у ключа его ещё нет — окно стартует с первого
+ * хита и не «скользит» за каждым запросом (иначе постоянный трафик никогда
+ * не выходил бы из окна). Fail-open: проблема Redis → null (лимит пропускает).
+ * @param {string} key - Ключ счётчика (prefix `rate:` даёт вызывающий модуль).
+ * @param {number} ttlSeconds - Длина окна в секундах.
+ * @returns {Promise<number|null>} Значение счётчика после INCR; null при недоступности Redis.
+ */
+export async function incrCounter(key: string, ttlSeconds: number): Promise<number | null> {
+  const results = await runPipeline([
+    ["incr", key],
+    ["expire", key, String(ttlSeconds), "NX"],
+  ]);
+  const value = results?.[0];
+  return typeof value === "number" ? value : null;
+}
+
 // ── Примитивы над ключами ───────────────────────────────────────────
 
 /**
@@ -192,18 +249,30 @@ export async function getHistory(key: string): Promise<ChatMessage[]> {
   return parseHistory(await getValue(key));
 }
 
+// Капы на запись: ответ LLM без max_tokens мог быть простынёй, и она легла бы
+// в Redis и в промт каждого следующего запроса (HISTORY_WINDOW режет число
+// сообщений, но не их размер) — так атаки сжигали квоту ускоряясь. Число
+// сообщений с запасом перекрывает HISTORY_WINDOW (10) из brain.ts.
+const HISTORY_MAX_MESSAGES = 20;
+const HISTORY_MAX_CONTENT_LENGTH = 4_000;
+
 /**
  * Дописать сообщения в конец истории: достать → дополнить → записать одним SET
  * с обновлением TTL (24 ч). Пустой список — no-op без обращения к Redis.
+ * Запись ограничена капами: последние 20 сообщений, каждая реплика не длиннее
+ * 4000 символов — раздутая история не забивает free-tier Redis и контекст промта.
  * @param {string} key - Ключ Redis.
  * @param {ChatMessage[]} messages - Сообщения для добавления в конец.
  * @returns {Promise<void>} Ничего; при недоступности Redis — no-op (fail-open, не бросает).
  */
 export async function appendHistory(key: string, messages: ChatMessage[]): Promise<void> {
   if (messages.length === 0) return;
-  // Достать → дополнить → записать одним SET с обновлением TTL.
+  // Достать → дополнить → обрезать по капам → записать одним SET с обновлением TTL.
   const history = await getHistory(key);
-  await setValue(key, JSON.stringify([...history, ...messages]), HISTORY_TTL_SECONDS);
+  const capped = [...history, ...messages]
+    .map(({ role, content }) => ({ role, content: content.slice(0, HISTORY_MAX_CONTENT_LENGTH) }))
+    .slice(-HISTORY_MAX_MESSAGES);
+  await setValue(key, JSON.stringify(capped), HISTORY_TTL_SECONDS);
 }
 
 /**

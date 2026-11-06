@@ -2,6 +2,7 @@ import process from "node:process";
 import { log } from "../log.js";
 import { answer } from "../brain/brain.js";
 import { knowledgeEntries } from "../brain/prompt.js";
+import { hitRateLimit } from "../rate-limit.js";
 import { appendHistory, clearHistory, getHistory, tgKey } from "../store.js";
 import {
   answerCallbackQuery,
@@ -32,6 +33,9 @@ const UNKNOWN_COMMAND_TEXT = "Не знаю такую команду. Набе�
 
 const CALLBACK_ERROR_TEXT = "Кнопка устарела. Набери /start — дам свежие подсказки.";
 
+const RATE_LIMIT_TEXT =
+  "Слишком много вопросов подряд — сделай небольшую паузу и попробуй снова 🙂";
+
 // На /start — первые 3 элемента справки, те же темы, что чипсы вебчата.
 const START_BUTTONS_COUNT = 3;
 
@@ -55,10 +59,18 @@ function startKeyboard(): TgInlineKeyboardMarkup {
   return { inline_keyboard: buttons.map((button) => [button]) };
 }
 
-// Единый поток для свободного текста и нажатой кнопки: история из Redis →
-// ответ brain → пара вопрос/ответ обратно в историю. Fail-open store:
-// без Redis бот всё равно отвечает, просто без контекста.
+// Единый поток для свободного текста и нажатой кнопки: лимит чата → история из
+// Redis → ответ brain → пара вопрос/ответ обратно в историю. Лимитер до
+// истории: шторм вопросов одного чата дешевле остановить до похода в Redis/LLM.
+// Бакет по chatId: атакующему нужны N аккаунтов на N параллельных потоков, а
+// Telegram сам душит массовые аккаунты. Fail-open store — без Redis лимит не
+// срабатывает. Команды (/start /help /reset /about) лимит не тратят: это
+// действия интерфейса без LLM.
 async function answerAsQuestion(chatId: number, question: string): Promise<void> {
+  if (!(await hitRateLimit(`tg:${chatId}`))) {
+    await sendMessage(chatId, RATE_LIMIT_TEXT);
+    return;
+  }
   const key = tgKey(chatId);
   const history = await getHistory(key);
   const { text: reply } = await answer(question, history);

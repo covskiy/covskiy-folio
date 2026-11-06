@@ -5,6 +5,7 @@ import {
   getHistory,
   getValue,
   HISTORY_TTL_SECONDS,
+  incrCounter,
   setValue,
   tgKey,
   webKey,
@@ -122,6 +123,72 @@ describe("store: REST-команды", () => {
     vi.stubEnv("UPSTASH_REDIS_REST_TOKEN", "test-token");
     await appendHistory("chat:web:abc", []);
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("appendHistory обрезает историю до последних 20 сообщений", async () => {
+    const existing = Array.from({ length: 19 }, (_, i) => ({
+      role: "user" as const,
+      content: `старое ${i}`,
+    }));
+    let saved: Array<{ role: string; content: string }> = [];
+    stubUpstash((command) => {
+      if (command[0] === "get") return ok(JSON.stringify(existing));
+      saved = JSON.parse(String(command[2])) as Array<{ role: string; content: string }>;
+      return ok("OK");
+    });
+
+    await appendHistory("chat:web:abc", [
+      { role: "assistant", content: "ответ 19" },
+      { role: "assistant", content: "ответ 20" },
+    ]);
+
+    expect(saved).toHaveLength(20);
+    expect(saved[0]).toEqual({ role: "user", content: "старое 1" });
+    expect(saved.at(-1)).toEqual({ role: "assistant", content: "ответ 20" });
+  });
+
+  it("appendHistory обрезает реплику длиннее 4000 символов", async () => {
+    let saved: Array<{ role: string; content: string }> = [];
+    stubUpstash((command) => {
+      if (command[0] === "get") return ok(null);
+      saved = JSON.parse(String(command[2])) as Array<{ role: string; content: string }>;
+      return ok("OK");
+    });
+
+    await appendHistory("chat:web:abc", [{ role: "user", content: "x".repeat(4_500) }]);
+
+    expect(saved).toHaveLength(1);
+    expect(saved[0].content).toHaveLength(4_000);
+  });
+
+  it("incrCounter шлёт pipeline [incr, expire NX] одним POST и возвращает счётчик", async () => {
+    vi.stubEnv("UPSTASH_REDIS_REST_URL", REDIS_URL);
+    vi.stubEnv("UPSTASH_REDIS_REST_TOKEN", "test-token");
+    let body: unknown;
+    const fetchMock = vi.fn(async (_input: unknown, init?: RequestInit) => {
+      body = JSON.parse(String(init?.body));
+      // Ответ pipeline — массив {result} по элементам, а не {result} целиком.
+      return new Response(JSON.stringify([{ result: 3 }, { result: 1 }]));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(incrCounter("rate:web:1", 3600)).resolves.toBe(3);
+    expect(body).toEqual([
+      ["incr", "rate:web:1"],
+      // NX: TTL только если его нет — окно стартует с первого хита, не скользит
+      ["expire", "rate:web:1", "3600", "NX"],
+    ]);
+  });
+
+  it("incrCounter: ошибка в элементе pipeline → null (fail-open)", async () => {
+    stubUpstash(
+      () =>
+        new Response(JSON.stringify([{ error: "WRONGTYPE" }, { result: 1 }]), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+    );
+    await expect(incrCounter("rate:web:1", 3600)).resolves.toBeNull();
   });
 
   it("помощники ключей формируют префиксы chat:web / chat:tg", () => {

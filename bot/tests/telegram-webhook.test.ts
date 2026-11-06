@@ -252,10 +252,25 @@ function stubRedisBotApiAndLlm(llmText: string): {
   vi.stubEnv("UPSTASH_REDIS_REST_TOKEN", "test-token");
   stubLlm();
   const store = new Map<string, string>();
+  const counters = new Map<string, number>();
   const fetchMock = vi.fn(async (input: unknown, init?: RequestInit) => {
     const url = String(input);
     if (url === "http://upstash.test") {
-      const command = JSON.parse(String(init?.body)) as string[];
+      const body = JSON.parse(String(init?.body)) as unknown;
+      // Pipeline лимитера — массив команд, одиночная команда — плоский массив.
+      if (Array.isArray(body) && Array.isArray(body[0])) {
+        const results = (body as string[][]).map((command) => {
+          if (command[0] === "incr") {
+            const next = (counters.get(command[1]) ?? 0) + 1;
+            counters.set(command[1], next);
+            return { result: next };
+          }
+          if (command[0] === "expire") return { result: 1 };
+          throw new Error(`неожиданная команда pipeline: ${command[0]}`);
+        });
+        return new Response(JSON.stringify(results));
+      }
+      const command = body as string[];
       if (command[0] === "get") {
         return new Response(JSON.stringify({ result: store.get(command[1]) ?? null }));
       }
@@ -295,21 +310,22 @@ describe("handleTelegramWebhook: с включённым Redis (Map-мок REST)
 
     expect(res.status).toBe(200);
     expect(tgMethod(fetchMock, 0)).toBe("answerCallbackQuery");
-    // История досталась из Redis до похода в LLM
+    // Pipeline лимитера, затем история досталась из Redis до похода в LLM
     expect(tgUrl(fetchMock, 1)).toBe("http://upstash.test");
-    expect(tgUrl(fetchMock, 2)).toContain("chat/completions");
+    expect(tgUrl(fetchMock, 2)).toBe("http://upstash.test");
+    expect(tgUrl(fetchMock, 3)).toContain("chat/completions");
     const llmBody = JSON.parse(
-      String((fetchMock.mock.calls[2] as [string, RequestInit])[1].body),
+      String((fetchMock.mock.calls[3] as [string, RequestInit])[1].body),
     ) as { messages: { role: string; content: string }[] };
     expect(llmBody.messages.at(-2)).toMatchObject({ role: "user", content: "старый вопрос" });
     // Вопрос кнопки — title первого элемента справки
     expect(llmBody.messages.at(-1)).toMatchObject({ role: "user", content: "Кто я" });
-    // appendHistory — это get(3) + set(4) в Redis, затем sendMessage и editMessageText
-    expect(tgUrl(fetchMock, 3)).toBe("http://upstash.test");
+    // appendHistory — это get(4) + set(5) в Redis, затем sendMessage и editMessageText
     expect(tgUrl(fetchMock, 4)).toBe("http://upstash.test");
-    expect(tgMethod(fetchMock, 5)).toBe("sendMessage");
-    expect(tgMethod(fetchMock, 6)).toBe("editMessageText");
-    const edit = tgBody(fetchMock, 6);
+    expect(tgUrl(fetchMock, 5)).toBe("http://upstash.test");
+    expect(tgMethod(fetchMock, 6)).toBe("sendMessage");
+    expect(tgMethod(fetchMock, 7)).toBe("editMessageText");
+    const edit = tgBody(fetchMock, 7);
     expect(edit).toMatchObject({ chat_id: 42, message_id: 10, text: "Привет!" });
     expect(edit.reply_markup).toBeUndefined();
 
@@ -371,6 +387,25 @@ describe("handleTelegramWebhook: с включённым Redis (Map-мок REST)
         { role: "assistant", content: "ответ brain" },
       ]),
     );
+  });
+
+  it("RATE_LIMIT_MAX исчерпан → текст лимита, LLM не вызывается, ответ остаётся 200", async () => {
+    vi.stubEnv("RATE_LIMIT_MAX", "1");
+    const { fetchMock } = stubRedisBotApiAndLlm("ответ brain");
+
+    const first = await handleTelegramWebhook(updateWithText("первый"));
+    expect(first.status).toBe(200);
+    const second = await handleTelegramWebhook(updateWithText("второй"));
+    // Telegram ждёт 2xx всегда — лимит сообщается в тексте, а не статусом
+    expect(second.status).toBe(200);
+
+    const llmCalls = fetchMock.mock.calls.filter(([url]) =>
+      String(url).includes("chat/completions"),
+    );
+    expect(llmCalls).toHaveLength(1);
+    const lastCall = fetchMock.mock.calls.length - 1;
+    expect(tgMethod(fetchMock, lastCall)).toBe("sendMessage");
+    expect(String(tgBody(fetchMock, lastCall).text)).toContain("Слишком много");
   });
 });
 

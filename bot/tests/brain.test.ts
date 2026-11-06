@@ -35,12 +35,38 @@ describe("answer: LLM-ветка", () => {
     const body = JSON.parse(String(requestInit?.body)) as {
       model: string;
       messages: Array<{ role: string; content: string }>;
+      max_tokens: number;
     };
     expect(body.model).toBe("test-model");
+    // Потолок генерации по умолчанию — защита от простыней, раздувающих квоту
+    expect(body.max_tokens).toBe(1_024);
     // Без истории: system + сам вопрос
     expect(body.messages[0].role).toBe("system");
     expect(body.messages).toHaveLength(2);
     expect(body.messages.at(-1)?.content).toBe("привет");
+  });
+
+  it("env LLM_MAX_TOKENS переопределяет дефолт; мусор в env — снова дефолт", async () => {
+    vi.stubEnv("LLM_BASE_URL", "http://127.0.0.1:9999/v1");
+    vi.stubEnv("LLM_MODEL", "test-model");
+    const fetchMock = vi.fn(async (_url: string | URL, _init?: RequestInit) => llmResponse("Ок"));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const bodyMaxTokens = (): number => {
+      const lastCall = fetchMock.mock.calls.at(-1);
+      return (JSON.parse(String(lastCall?.[1]?.body)) as { max_tokens: number }).max_tokens;
+    };
+
+    await answer("вопрос");
+    expect(bodyMaxTokens()).toBe(1_024);
+
+    vi.stubEnv("LLM_MAX_TOKENS", "2048");
+    await answer("вопрос");
+    expect(bodyMaxTokens()).toBe(2_048);
+
+    vi.stubEnv("LLM_MAX_TOKENS", "мусор");
+    await answer("вопрос");
+    expect(bodyMaxTokens()).toBe(1_024);
   });
 
   it("история: последние 10 сообщений вставляются перед текущим вопросом", async () => {

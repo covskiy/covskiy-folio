@@ -23,6 +23,16 @@ const LLM_TIMEOUT_DEFAULT_MS = 15_000;
 function llmTimeoutMs(): number {
   return Number(process.env.LLM_TIMEOUT_MS) || LLM_TIMEOUT_DEFAULT_MS;
 }
+
+// Потолок генерации: без него ответ мог быть простынёй на всю квоту, а история
+// хранит его целиком и тащит в промт каждого следующего запроса — атака
+// «выдай максимум текста» сжигала квоту ускоряясь. env LLM_MAX_TOKENS
+// переопределяет (паттерн llmTimeoutMs: мусор/ноль — снова дефолт).
+const LLM_MAX_TOKENS_DEFAULT = 1_024;
+
+function llmMaxTokens(): number {
+  return Number(process.env.LLM_MAX_TOKENS) || LLM_MAX_TOKENS_DEFAULT;
+}
 const DUMB_SCORE_THRESHOLD = 0.2;
 
 // Решение владельца: в промт идёт последние 10 сообщений диалога.
@@ -62,6 +72,7 @@ async function askLlm(history: ChatMessage[]): Promise<string> {
       model: cfg.model,
       messages: [{ role: "system", content: systemPrompt() }, ...history],
       temperature: 0.3,
+      max_tokens: llmMaxTokens(),
     }),
     signal: AbortSignal.timeout(llmTimeoutMs()),
   });
