@@ -1,14 +1,8 @@
-// Явный импорт вместо "types" в tsconfig: резолв @types не должен зависеть
-// от окружения сборки (на Vercel tsc запускается из другого cwd).
-import process from "node:process";
-
-// Корень Bot API: дефолт — официальный api.telegram.org; env-оверрайд — только
-// для локального смоука против мока (bot/dev/mock-telegram-api.mjs), на прод не
-// задавать. Резолвится на вызов, не при импорте: подмена env после старта
-// процесса остаётся видимой (тот же принцип, что у тестов с vi.stubEnv).
-function apiRoot(): string {
-  return process.env.TELEGRAM_API_ROOT?.trim().replace(/\/+$/, "") || "https://api.telegram.org";
-}
+// config — готовый типизированный слайс telegram (токен/секрет trim'нутые,
+// apiRoot без хвостовых слэшей и с дефолтом); дефолтный инстанс для рантайма.
+// Env-оверрайд TELEGRAM_API_ROOT — только для локального смоука против мока
+// (bot/dev/mock-telegram-api.mjs), на прод не задавать.
+import { config } from "./config.js";
 
 /**
  * Чат Telegram — подмножество полей Bot API, нужное боту.
@@ -53,10 +47,14 @@ export interface TgInlineKeyboardMarkup {
 }
 
 async function tgCall<T>(method: string, payload: unknown): Promise<T> {
-  const token = process.env.TELEGRAM_BOT_TOKEN;
+  // Срез резолвим на каждый вызов, не при импорте: геттеры ленивые, подмена
+  // env после старта процесса остаётся видимой (тот же принцип, что у тестов
+  // с vi.stubEnv).
+  const tg = config.telegram;
+  const token = tg.botToken;
   if (!token) throw new Error("TELEGRAM_BOT_TOKEN не задан");
 
-  const response = await fetch(`${apiRoot()}/bot${token}/${method}`, {
+  const response = await fetch(`${tg.apiRoot}/bot${token}/${method}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),

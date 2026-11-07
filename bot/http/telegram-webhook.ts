@@ -1,4 +1,6 @@
-import process from "node:process";
+// config — готовый типизированный слайс telegram (секрет trim'нутый);
+// дефолтный инстанс для рантайма.
+import { config } from "../config.js";
 import { log } from "../log.js";
 import { answer } from "../brain/brain.js";
 import { knowledgeEntries } from "../brain/prompt.js";
@@ -197,7 +199,7 @@ async function handleCallbackQuery(callback: TgCallbackQuery): Promise<void> {
  */
 export async function handleTelegramWebhook(request: Request): Promise<Response> {
   // Проверяем, что запрос пришёл действительно от Telegram (секрет задаётся в setWebhook)
-  const expected = process.env.TELEGRAM_WEBHOOK_SECRET;
+  const expected = config.telegram.webhookSecret;
   if (!expected || request.headers.get(SECRET_HEADER) !== expected) {
     return Response.json({ ok: false }, { status: 401 });
   }

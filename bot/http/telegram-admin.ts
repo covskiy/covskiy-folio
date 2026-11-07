@@ -1,4 +1,6 @@
-import process from "node:process";
+// config — готовый типизированный слайс telegram (секрет trim'нутый);
+// дефолтный инстанс для рантайма.
+import { config } from "../config.js";
 import { createLlm } from "../llm.js";
 import { log } from "../log.js";
 import { systemPrompt } from "../brain/prompt.js";
@@ -54,7 +56,7 @@ async function healthResponse(): Promise<Response> {
  * @returns {Promise<Response>} JSON; коды: 200, 404 (секрет отсутствует/неверен), 405, 502.
  */
 export async function handleTelegramAdmin(request: Request): Promise<Response> {
-  const secret = process.env.TELEGRAM_WEBHOOK_SECRET;
+  const secret = config.telegram.webhookSecret;
   if (!secret) {
     // Печатаем только факт поломки конфигурации, не значение секрета.
     log.error("telegram-admin", "TELEGRAM_WEBHOOK_SECRET не задан в env");
