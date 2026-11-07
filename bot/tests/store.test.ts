@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { createConfig } from "../config";
 import type { RedisRest } from "../redis-rest";
 import { createStore, HISTORY_TTL_SECONDS, type StoreDeps } from "../store";
 
@@ -33,7 +34,7 @@ function fakeRedis(
 type Handlers = Parameters<typeof fakeRedis>[0];
 type HandlerArg = Handlers | ((command: unknown[]) => unknown);
 
-/** createStore с фейковым транспортом (env не нужен: его читает только ping). */
+/** createStore с фейковым транспортом (config не нужен: его читает только ping). */
 function makeStore(handlers: HandlerArg = {}, deps: Omit<StoreDeps, "redis"> = {}) {
   const resolved: Handlers = typeof handlers === "function" ? { command: handlers } : handlers;
   const fake = fakeRedis(resolved);
@@ -270,8 +271,8 @@ describe("store: incrCounter (лимитер через pipeline)", () => {
 });
 
 describe("store: ping (health-check)", () => {
-  it("env не задан → ok:false «не настроен», redis не вызывается", async () => {
-    const { store, command } = makeStore(undefined, { env: {} });
+  it("пары в config нет → ok:false «не настроен», redis не вызывается", async () => {
+    const { store, command } = makeStore(undefined, { config: createConfig({}) });
 
     const result = await store.ping();
 
@@ -284,7 +285,10 @@ describe("store: ping (health-check)", () => {
 
   it("PONG → ok:true с latencyMs", async () => {
     const { store, command } = makeStore(() => ok("PONG"), {
-      env: { UPSTASH_REDIS_REST_URL: "http://upstash.test", UPSTASH_REDIS_REST_TOKEN: "tok" },
+      config: createConfig({
+        UPSTASH_REDIS_REST_URL: "http://upstash.test",
+        UPSTASH_REDIS_REST_TOKEN: "tok",
+      }),
     });
 
     const result = await store.ping();
@@ -296,7 +300,10 @@ describe("store: ping (health-check)", () => {
 
   it("REST упал (command → null) → ok:false с причиной PONG, без throw", async () => {
     const { store } = makeStore(() => ok(null), {
-      env: { UPSTASH_REDIS_REST_URL: "http://upstash.test", UPSTASH_REDIS_REST_TOKEN: "tok" },
+      config: createConfig({
+        UPSTASH_REDIS_REST_URL: "http://upstash.test",
+        UPSTASH_REDIS_REST_TOKEN: "tok",
+      }),
     });
 
     const result = await store.ping();
@@ -305,9 +312,9 @@ describe("store: ping (health-check)", () => {
     expect(result.reason).toContain("PONG");
   });
 
-  it("env задан частично (только URL) → «не настроен» (пары не смешиваются)", async () => {
+  it("пара неполная (только URL) → «не настроен» (пары не смешиваются)", async () => {
     const { store, command } = makeStore(undefined, {
-      env: { UPSTASH_REDIS_REST_URL: "http://upstash.test" },
+      config: createConfig({ UPSTASH_REDIS_REST_URL: "http://upstash.test" }),
     });
 
     const result = await store.ping();

@@ -1,6 +1,8 @@
-import process from "node:process";
 // Тип инстанса логгера — структурная подмена в тестах без контрактов-файлов.
 import { createLogger, type Logger } from "./log.js";
+// config — готовый типизированный слайс redis; дефолтный инстанс для рантайма.
+import { config } from "./config.js";
+import type { AppConfig } from "./config.js";
 
 /**
  * Транспорт Upstash Redis REST API — единственное место, где код ходит в
@@ -11,10 +13,14 @@ import { createLogger, type Logger } from "./log.js";
  * REST-эндпоинт у Upstash один, зависимости не нужны, а Vercel-функция и так
  * живёт на нативном fetch.
  *
+ * Транспорт не знает, КАК парсится env: config.ts отдаёт готовый слайс redis
+ * (url без слэшей, токен trim'нутый, приоритет UPSTASH-семейства над KV) или
+ * null — null означает stateless-режим, здесь это fail-open (null из command).
+ *
  * Зависимости инжектируются через deps и резолвятся НА КАЖДЫЙ вызов, а не при
- * создании фабрики: подмена глобального fetch (vi.stubGlobal) или env
- * (vi.stubEnv / мутация объекта) после import должна быть видна — иначе тесты
- * и логика «env запекается в деплой» ломаются незаметно.
+ * создании фабрики: подмена глобального fetch (vi.stubGlobal) или config
+ * (ленивые геттеры перечитывают env на каждый доступ) после import должна быть
+ * видна — иначе тесты и логика «env запекается в деплой» ломаются незаметно.
  *
  * Дублирование «fetch + timeout + JSON» с llm.ts и telegram-api.ts оставлено
  * сознательно: у трёх мест разная семантика ошибок (throw / ok:false /
@@ -23,8 +29,8 @@ import { createLogger, type Logger } from "./log.js";
 
 /** Зависимости транспорта — точки инъекции для тестов; в рантайме createRedisRest(). */
 export interface RedisRestDeps {
-  /** Источник UPSTASH_REDIS_REST_* / KV_REST_API_*; по умолчанию process.env. */
-  env?: NodeJS.ProcessEnv;
+  /** Готовый конфиг; по умолчанию дефолтный config из config.ts (process.env). */
+  config?: AppConfig;
   /** Подмена сети; по умолчанию глобальный fetch. */
   fetchImpl?: typeof fetch;
   /** Логгер деградаций; по умолчанию createLogger() — один инстанс на фабрику. */
@@ -41,38 +47,13 @@ const LOG_MODULE = "store";
 // Дефолт таймаута одного REST-запроса.
 const DEFAULT_TIMEOUT_MS = 5_000;
 
-// Два семейства имён одной и той же базы: UPSTASH_REDIS_REST_* даёт upstash.com
-// при создании базы напрямую, KV_REST_API_* инжектит интеграция Vercel
-// Marketplace (из её пяти переменных нужны только эти две: READ_ONLY-токен и
-// не-REST KV_URL/REDIS_URL хранилищу не подходят). Пары не смешиваем: приоритет
-// у UPSTASH-семейства, неполная пара — как отсутствие (stateless).
 /**
- * Разворачивает env в пару {url, token} для Upstash REST; env приходит
- * аргументом (уже зарезолвенный на вызов) — читаем только его.
- * Экспортирована для ping в store.ts: там отсутствие env — не fail-open-сбой,
- * а честный диагностируемый результат «не настроен».
- * @param {NodeJS.ProcessEnv} env - Источник переменных (process.env или инъекция).
- * @returns Пара url/token (трим значений, срез хвостовых слэшей URL) или null, если пары нет.
- */
-export function restEnv(env: NodeJS.ProcessEnv): { url: string; token: string } | null {
-  for (const [urlName, tokenName] of [
-    ["UPSTASH_REDIS_REST_URL", "UPSTASH_REDIS_REST_TOKEN"],
-    ["KV_REST_API_URL", "KV_REST_API_TOKEN"],
-  ] as const) {
-    const url = env[urlName]?.trim();
-    const token = env[tokenName]?.trim();
-    if (url && token) return { url: url.replace(/\/+$/, ""), token };
-  }
-  return null;
-}
-
-/**
- * Фабрика транспорта: возвращает { command, pipeline }. env/fetch/timeout
+ * Фабрика транспорта: возвращает { command, pipeline }. config/fetch/timeout
  * резолвятся на каждый вызов command/pipeline; log — один инстанс на фабрику:
  * троттлинг warn'ов живёт в Map внутри его замыкания, свежий логгер на вызов
  * превратил бы warnThrottled в спам.
- * @param {RedisRestDeps} deps - Инъекции env/fetchImpl/log/timeoutMs; без аргументов —
- *   глобальный fetch и process.env, как раньше.
+ * @param {RedisRestDeps} deps - Инъекции config/fetchImpl/log/timeoutMs; без аргументов —
+ *   глобальный fetch и дефолтный config (process.env), как раньше.
  * @returns command(command) — одна команда; pipeline(commands) — массив команд одним POST.
  */
 export function createRedisRest(deps: RedisRestDeps = {}) {
@@ -88,10 +69,10 @@ export function createRedisRest(deps: RedisRestDeps = {}) {
    * @returns {Promise<unknown>} result из ответа; null при любой проблеме (fail-open, не бросает).
    */
   async function command(command: unknown[]): Promise<unknown> {
-    // Резолв на вызов: подмена глобального fetch/env после импорта видна.
-    const env = restEnv(deps.env ?? process.env);
-    if (!env) {
-      // Warn с троттлингом, не throw: отсутствие env — нормальный stateless-режим,
+    // Резолв на вызов: подмена глобального fetch/config после импорта видна.
+    const redis = (deps.config ?? config).redis;
+    if (!redis) {
+      // Warn с троттлингом, не throw: отсутствие пары — нормальный stateless-режим,
       // без троттлинга этот текст повторялся бы на каждый вопрос.
       log.warnThrottled(
         LOG_MODULE,
@@ -102,9 +83,9 @@ export function createRedisRest(deps: RedisRestDeps = {}) {
     }
     const doFetch = deps.fetchImpl ?? fetch;
     try {
-      const response = await doFetch(env.url, {
+      const response = await doFetch(redis.url, {
         method: "POST",
-        headers: { Authorization: `Bearer ${env.token}` },
+        headers: { Authorization: `Bearer ${redis.token}` },
         body: JSON.stringify(command),
         signal: AbortSignal.timeout(deps.timeoutMs ?? DEFAULT_TIMEOUT_MS),
       });
@@ -147,8 +128,9 @@ export function createRedisRest(deps: RedisRestDeps = {}) {
    *   элемента → null) или null при проблеме всего запроса (fail-open, не бросает).
    */
   async function pipeline(commands: unknown[][]): Promise<(unknown | null)[] | null> {
-    const env = restEnv(deps.env ?? process.env);
-    if (!env) {
+    // Резолв на вызов — как у command.
+    const redis = (deps.config ?? config).redis;
+    if (!redis) {
       // Тот же throttle-ключ, что у command: деградация одна, не дублируем.
       log.warnThrottled(
         LOG_MODULE,
@@ -159,9 +141,9 @@ export function createRedisRest(deps: RedisRestDeps = {}) {
     }
     const doFetch = deps.fetchImpl ?? fetch;
     try {
-      const response = await doFetch(env.url, {
+      const response = await doFetch(redis.url, {
         method: "POST",
-        headers: { Authorization: `Bearer ${env.token}` },
+        headers: { Authorization: `Bearer ${redis.token}` },
         body: JSON.stringify(commands),
         signal: AbortSignal.timeout(deps.timeoutMs ?? DEFAULT_TIMEOUT_MS),
       });

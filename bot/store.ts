@@ -1,10 +1,13 @@
-import process from "node:process";
 // Транспорт Upstash REST вынесен в redis-rest.ts (§11 фазы B): здесь остаётся
-// только домен — история, дедупликация, лимитер, ключи. restEnv переиспользуется
-// из транспорта: ping отличает «не настроен» от «нет ответа», это не fail-open.
-import { createRedisRest, restEnv, type RedisRest } from "./redis-rest.js";
+// только домен — история, дедупликация, лимитер, ключи. Слайс redis.ts из config
+// переиспользуется напрямую: ping отличает «не настроен» от «нет ответа», это не
+// fail-open, а парсинг env-семейств живёт в config.ts.
+import { createRedisRest, type RedisRest } from "./redis-rest.js";
 // Тип инстанса логгера — структурная подмена в тестах без контрактов-файлов.
 import type { Logger } from "./log.js";
+// config — готовый типизированный слайс redis; дефолтный инстанс для рантайма.
+import { config } from "./config.js";
+import type { AppConfig } from "./config.js";
 
 /**
  * Хранилище истории диалогов (вебчат + Telegram) поверх Upstash Redis REST API:
@@ -35,14 +38,15 @@ export const HISTORY_TTL_SECONDS = 86_400;
  * без аргументов (redis собирается из process.env и глобального fetch).
  */
 export interface StoreDeps {
-  /** Транспорт Upstash REST (createRedisRest); по умолчанию собирается из deps.env. */
+  /** Транспорт Upstash REST (createRedisRest); по умолчанию собирается из deps.config. */
   redis?: RedisRest;
   /** Логгер деградаций дефолтного транспорта; по умолчанию createLogger() внутри redis-rest. */
   log?: Logger;
-  // Единый источник env для дефолтного транспорта и проверки «не настроен» в
-  // ping — иначе инстанс с инжектированным env отвечал бы ping'ом из process.env.
-  /** Источник UPSTASH_REDIS_REST_* / KV_REST_API_*; по умолчанию process.env. */
-  env?: NodeJS.ProcessEnv;
+  // Единый источник конфигурации для дефолтного транспорта и проверки «не
+  // настроен» в ping — иначе инстанс с инжектированным config отвечал бы
+  // ping'ом из дефолтного config (process.env).
+  /** Готовый конфиг; по умолчанию дефолтный config из config.ts (process.env). */
+  config?: AppConfig;
 }
 
 // ── История диалога: одна JSON-строка на ключ ───────────────────────
@@ -74,15 +78,15 @@ export interface RedisPing {
  * answer в createBrain). Fail-open 1-в-1 с прежним модулем: ни одна функция
  * не бросает — гарантия fail-open лежит в транспорте (redis-rest возвращает
  * null вместо throw), домен лишь интерпретирует null как «пусто».
- * @param {StoreDeps} deps - Инъекции redis/log/env; без аргументов — поведение как раньше.
+ * @param {StoreDeps} deps - Инъекции redis/log/config; без аргументов — поведение как раньше.
  * @returns Доменные операции над Redis (история, дедупликация, лимитер, ping, ключи).
  */
 export function createStore(deps: StoreDeps = {}) {
   // Дефолт — инстанс рантайма; тесты приходят со своим транспортом через deps.
-  const redis = deps.redis ?? createRedisRest({ env: deps.env, log: deps.log });
-  // Единый источник env для транспорта и ping: «не настроен» в ping должен
-  // определяться теми же переменными, что и ходит сам store.
-  const env = deps.env ?? process.env;
+  // Инжектированный config пробрасывается транспорту целиком: транспорт и ping
+  // читают ОДИН слайс redis (единый источник истины), без инъекции транспорт
+  // берёт дефолтный config сам.
+  const redis = deps.redis ?? createRedisRest({ config: deps.config, log: deps.log });
 
   /**
    * Атомарный счётчик для rate-limit'а: INCR + EXPIRE NX одним pipeline.
@@ -106,7 +110,7 @@ export function createStore(deps: StoreDeps = {}) {
 
   /**
    * Значение ключа Redis (GET).
-   * Env: UPSTASH_REDIS_REST_* или KV_REST_API_URL/TOKEN — см. restEnv (без них — null и warn).
+   * Env: UPSTASH_REDIS_REST_* или KV_REST_API_URL/TOKEN — см. config.redis (без них — null и warn).
    * @param {string} key - Ключ Redis.
    * @returns {Promise<string|null>} Значение или null: ключа нет / store недоступен (fail-open, не бросает).
    */
@@ -168,12 +172,12 @@ export function createStore(deps: StoreDeps = {}) {
   // env — честный диагностируемый результат «не настроен», а не сбой.
   /**
    * Проверка доступности Upstash Redis командой PING.
-   * Env: UPSTASH_REDIS_REST_* или KV_REST_API_URL/TOKEN (см. restEnv).
-   * Не бросает: отсутствие env здесь — не сбой, а честный результат ok:false.
+   * Env: UPSTASH_REDIS_REST_* или KV_REST_API_URL/TOKEN (см. config.redis).
+   * Не бросает: отсутствие пары здесь — не сбой, а честный результат ok:false.
    * @returns {Promise<RedisPing>} ok/latencyMs при успехе, ok:false + reason при отказе.
    */
   async function ping(): Promise<RedisPing> {
-    if (!restEnv(env)) {
+    if (!(deps.config ?? config).redis) {
       return { ok: false, reason: "не настроен: UPSTASH_REDIS_REST_* / KV_REST_API_* отсутствуют" };
     }
     const startedAt = Date.now();

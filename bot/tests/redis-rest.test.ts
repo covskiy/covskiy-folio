@@ -1,9 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
+import { createConfig } from "../config";
 import { createLogger, type Logger } from "../log";
-import { createRedisRest, restEnv, type RedisRestDeps } from "../redis-rest";
+import { createRedisRest, type RedisRestDeps } from "../redis-rest";
 
-// Транспорт тестируется через инъекцию fetchImpl/env/log — без vi.stubGlobal:
+// Транспорт тестируется через инъекцию config/fetchImpl/log — без vi.stubGlobal:
 // подменяется только то, что объявлено в deps, глобальное состояние не трогаем.
+// Парсинг env-семейств (приоритет UPSTASH/KV, trim, слэши, неполные пары)
+// покрывают юнит-тесты config.test.ts — здесь только интеграция через транспорт.
 
 const REDIS_URL = "http://upstash.test";
 
@@ -22,58 +25,52 @@ function makeLog(): { log: Logger; warns: string[] } {
   return { log, warns };
 }
 
-/** Фабрика с дефолтной Upstash-парой env и моком fetch, отдающим ok(result). */
+/** Фабрика с дефолтной Upstash-парой в config и моком fetch, отдающим ok(result). */
 function makeTransport(
   result: unknown,
   overrides: Partial<RedisRestDeps> = {},
 ): { redis: ReturnType<typeof createRedisRest>; fetchMock: ReturnType<typeof vi.fn> } {
   const fetchMock = vi.fn(async () => ok(result));
   const redis = createRedisRest({
-    env: { UPSTASH_REDIS_REST_URL: REDIS_URL, UPSTASH_REDIS_REST_TOKEN: "test-token" },
+    config: createConfig({
+      UPSTASH_REDIS_REST_URL: REDIS_URL,
+      UPSTASH_REDIS_REST_TOKEN: "test-token",
+    }),
     fetchImpl: fetchMock as unknown as typeof fetch,
     ...overrides,
   });
   return { redis, fetchMock };
 }
 
-describe("restEnv: env-семейства (два имени одной базы)", () => {
-  it("приоритет UPSTASH над KV: оба семейства заданы → UPSTASH-пара", () => {
-    expect(
-      restEnv({
-        UPSTASH_REDIS_REST_URL: "http://upstash.test",
-        UPSTASH_REDIS_REST_TOKEN: "upstash-token",
-        KV_REST_API_URL: "http://kv.test",
-        KV_REST_API_TOKEN: "kv-token",
-      }),
-    ).toEqual({ url: "http://upstash.test", token: "upstash-token" });
-  });
-
-  it("неполная пара — как отсутствие (пары не смешиваются)", () => {
-    expect(restEnv({ UPSTASH_REDIS_REST_URL: "http://upstash.test" })).toBeNull();
-    expect(restEnv({ UPSTASH_REDIS_REST_TOKEN: "tok" })).toBeNull();
-    expect(
-      restEnv({ UPSTASH_REDIS_REST_URL: "http://upstash.test", KV_REST_API_TOKEN: "kv" }),
-    ).toBeNull();
-  });
-
-  it("KV_REST_API_URL/TOKEN (интеграция Vercel Marketplace) работают как источник", () => {
-    expect(restEnv({ KV_REST_API_URL: "http://kv.test/", KV_REST_API_TOKEN: "kv-token" })).toEqual({
-      url: "http://kv.test",
-      token: "kv-token",
+describe("config: слайс redis через транспорт (интеграция)", () => {
+  it("KV-пара (интеграция Vercel Marketplace) работает как источник: Bearer из KV-токена", async () => {
+    const fetchMock = vi.fn(async () => ok("OK"));
+    const redis = createRedisRest({
+      config: createConfig({ KV_REST_API_URL: "http://kv.test", KV_REST_API_TOKEN: "kv-token" }),
+      fetchImpl: fetchMock as unknown as typeof fetch,
     });
+
+    await redis.command(["get", "k"]);
+
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe("http://kv.test");
+    expect((init.headers as Record<string, string>).Authorization).toBe("Bearer kv-token");
   });
 
-  it("трим значений и срез хвостовых слэшей URL", () => {
-    expect(
-      restEnv({
-        UPSTASH_REDIS_REST_URL: "  http://upstash.test///  ",
-        UPSTASH_REDIS_REST_TOKEN: "  tok  ",
-      }),
-    ).toEqual({ url: "http://upstash.test", token: "tok" });
-  });
+  it("неполная пара (только URL) → null + warn no-env, fetch не зовётся", async () => {
+    const { log, warns } = makeLog();
+    const fetchMock = vi.fn(async () => ok("OK"));
+    const redis = createRedisRest({
+      config: createConfig({ UPSTASH_REDIS_REST_URL: REDIS_URL }),
+      fetchImpl: fetchMock as unknown as typeof fetch,
+      log,
+    });
 
-  it("пустые строки — отсутствие (restEnv тримит и считает их отсутствием)", () => {
-    expect(restEnv({ UPSTASH_REDIS_REST_URL: "", UPSTASH_REDIS_REST_TOKEN: "" })).toBeNull();
+    await expect(redis.command(["get", "k"])).resolves.toBeNull();
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(warns).toEqual([
+      "[store] Upstash Redis не настроен (UPSTASH_REDIS_REST_* / KV_REST_API_URL+TOKEN) — работаю без истории",
+    ]);
   });
 });
 
@@ -96,21 +93,14 @@ describe("command: одиночная REST-команда", () => {
     expect(init.signal).toBeInstanceOf(AbortSignal);
   });
 
-  it("env задан с хвостовыми слэшами → fetch получает URL без них", async () => {
-    const fetchMock = vi.fn(async () => ok("OK"));
-    const redis = createRedisRest({
-      env: { UPSTASH_REDIS_REST_URL: `${REDIS_URL}/`, UPSTASH_REDIS_REST_TOKEN: "tok" },
-      fetchImpl: fetchMock as unknown as typeof fetch,
-    });
-    await redis.command(["ping"]);
-    expect((fetchMock.mock.calls[0] as unknown as [string])[0]).toBe(REDIS_URL);
-  });
-
   it("не-2xx → null + warn rest-status", async () => {
     const { log, warns } = makeLog();
     const fetchMock = vi.fn(async () => new Response("boom", { status: 500 }));
     const redis = createRedisRest({
-      env: { UPSTASH_REDIS_REST_URL: REDIS_URL, UPSTASH_REDIS_REST_TOKEN: "tok" },
+      config: createConfig({
+        UPSTASH_REDIS_REST_URL: REDIS_URL,
+        UPSTASH_REDIS_REST_TOKEN: "tok",
+      }),
       fetchImpl: fetchMock as unknown as typeof fetch,
       log,
     });
@@ -129,7 +119,10 @@ describe("command: одиночная REST-команда", () => {
         }),
     );
     const redis = createRedisRest({
-      env: { UPSTASH_REDIS_REST_URL: REDIS_URL, UPSTASH_REDIS_REST_TOKEN: "tok" },
+      config: createConfig({
+        UPSTASH_REDIS_REST_URL: REDIS_URL,
+        UPSTASH_REDIS_REST_TOKEN: "tok",
+      }),
       fetchImpl: fetchMock as unknown as typeof fetch,
       log,
     });
@@ -146,7 +139,10 @@ describe("command: одиночная REST-команда", () => {
       throw new Error("ECONNREFUSED");
     });
     const redis = createRedisRest({
-      env: { UPSTASH_REDIS_REST_URL: REDIS_URL, UPSTASH_REDIS_REST_TOKEN: "tok" },
+      config: createConfig({
+        UPSTASH_REDIS_REST_URL: REDIS_URL,
+        UPSTASH_REDIS_REST_TOKEN: "tok",
+      }),
       fetchImpl: fetchMock as unknown as typeof fetch,
       log,
     });
@@ -161,12 +157,12 @@ describe("command: одиночная REST-команда", () => {
   });
 });
 
-describe("command: нет env (stateless-режим)", () => {
+describe("command: нет пары в config (stateless-режим)", () => {
   it("→ null, warn no-env, fetch не зовётся", async () => {
     const { log, warns } = makeLog();
     const fetchMock = vi.fn(async () => ok("OK"));
     const redis = createRedisRest({
-      env: {},
+      config: createConfig({}),
       fetchImpl: fetchMock as unknown as typeof fetch,
       log,
     });
@@ -180,7 +176,7 @@ describe("command: нет env (stateless-режим)", () => {
 
   it("троттлинг: второй вызов в окне гасится (один инстанс логгера — одна Map)", async () => {
     const { log, warns } = makeLog();
-    const redis = createRedisRest({ env: {}, log });
+    const redis = createRedisRest({ config: createConfig({}), log });
 
     await redis.command(["get", "k"]);
     await redis.command(["get", "k"]);
@@ -191,7 +187,7 @@ describe("command: нет env (stateless-режим)", () => {
 
   it("command и pipeline делят один throttle-ключ no-env", async () => {
     const { log, warns } = makeLog();
-    const redis = createRedisRest({ env: {}, log });
+    const redis = createRedisRest({ config: createConfig({}), log });
 
     await redis.command(["get", "k"]);
     await redis.pipeline([["incr", "rate:1"]]);
@@ -205,8 +201,14 @@ describe("command: нет env (stateless-режим)", () => {
     const warns: string[] = [];
     const out = { warn: (line: string) => warns.push(line) };
     // Разные фабрики без deps.log получают разные дефолтные логгеры (разные Map троттлинга).
-    await createRedisRest({ env: {}, log: createLogger({ out }) }).command(["get", "k"]);
-    await createRedisRest({ env: {}, log: createLogger({ out }) }).command(["get", "k"]);
+    await createRedisRest({ config: createConfig({}), log: createLogger({ out }) }).command([
+      "get",
+      "k",
+    ]);
+    await createRedisRest({ config: createConfig({}), log: createLogger({ out }) }).command([
+      "get",
+      "k",
+    ]);
 
     expect(warns).toHaveLength(2);
   });
@@ -218,7 +220,10 @@ describe("pipeline: массив команд одним POST", () => {
       async () => new Response(JSON.stringify([{ result: 3 }, { result: 1 }])),
     );
     const redis = createRedisRest({
-      env: { UPSTASH_REDIS_REST_URL: REDIS_URL, UPSTASH_REDIS_REST_TOKEN: "tok" },
+      config: createConfig({
+        UPSTASH_REDIS_REST_URL: REDIS_URL,
+        UPSTASH_REDIS_REST_TOKEN: "tok",
+      }),
       fetchImpl: fetchMock as unknown as typeof fetch,
     });
 
@@ -241,7 +246,10 @@ describe("pipeline: массив команд одним POST", () => {
       async () => new Response(JSON.stringify([{ error: "WRONGTYPE" }, { result: 1 }])),
     );
     const redis = createRedisRest({
-      env: { UPSTASH_REDIS_REST_URL: REDIS_URL, UPSTASH_REDIS_REST_TOKEN: "tok" },
+      config: createConfig({
+        UPSTASH_REDIS_REST_URL: REDIS_URL,
+        UPSTASH_REDIS_REST_TOKEN: "tok",
+      }),
       fetchImpl: fetchMock as unknown as typeof fetch,
     });
 
@@ -257,7 +265,10 @@ describe("pipeline: массив команд одним POST", () => {
     const { log, warns } = makeLog();
     const fetchMock = vi.fn(async () => new Response(JSON.stringify({ result: 1 })));
     const redis = createRedisRest({
-      env: { UPSTASH_REDIS_REST_URL: REDIS_URL, UPSTASH_REDIS_REST_TOKEN: "tok" },
+      config: createConfig({
+        UPSTASH_REDIS_REST_URL: REDIS_URL,
+        UPSTASH_REDIS_REST_TOKEN: "tok",
+      }),
       fetchImpl: fetchMock as unknown as typeof fetch,
       log,
     });
@@ -270,7 +281,10 @@ describe("pipeline: массив команд одним POST", () => {
     const { log, warns } = makeLog();
     const fetchMock = vi.fn(async () => new Response("boom", { status: 503 }));
     const redis = createRedisRest({
-      env: { UPSTASH_REDIS_REST_URL: REDIS_URL, UPSTASH_REDIS_REST_TOKEN: "tok" },
+      config: createConfig({
+        UPSTASH_REDIS_REST_URL: REDIS_URL,
+        UPSTASH_REDIS_REST_TOKEN: "tok",
+      }),
       fetchImpl: fetchMock as unknown as typeof fetch,
       log,
     });
@@ -285,7 +299,10 @@ describe("pipeline: массив команд одним POST", () => {
       throw new Error("ETIMEDOUT");
     });
     const redis = createRedisRest({
-      env: { UPSTASH_REDIS_REST_URL: REDIS_URL, UPSTASH_REDIS_REST_TOKEN: "tok" },
+      config: createConfig({
+        UPSTASH_REDIS_REST_URL: REDIS_URL,
+        UPSTASH_REDIS_REST_TOKEN: "tok",
+      }),
       fetchImpl: fetchMock as unknown as typeof fetch,
       log,
     });
@@ -298,7 +315,7 @@ describe("pipeline: массив команд одним POST", () => {
     const { log, warns } = makeLog();
     const fetchMock = vi.fn(async () => ok(1));
     const redis = createRedisRest({
-      env: {},
+      config: createConfig({}),
       fetchImpl: fetchMock as unknown as typeof fetch,
       log,
     });
@@ -312,10 +329,17 @@ describe("pipeline: массив команд одним POST", () => {
 });
 
 describe("deps: резолв на вызов, а не при создании фабрики", () => {
-  it("env, подменённый после создания инстанса, виден (мутируемый объект)", async () => {
+  it("config с мутабельным env видит пару, добавленную после создания (ленивые геттеры)", async () => {
+    // Ленивость слайса юнит-тестами покрывает config.test.ts; здесь проверяем,
+    // что транспорт читает deps.config заново на КАЖДЫЙ вызов, а не запёк
+    // слайс при создании фабрики — иначе vi.stubEnv/мутация между вызовами
+    // ломались бы незаметно.
     const env: NodeJS.ProcessEnv = {};
     const fetchMock = vi.fn(async () => ok("OK"));
-    const redis = createRedisRest({ env, fetchImpl: fetchMock as unknown as typeof fetch });
+    const redis = createRedisRest({
+      config: createConfig(env),
+      fetchImpl: fetchMock as unknown as typeof fetch,
+    });
 
     await redis.command(["get", "k"]);
     expect(fetchMock).not.toHaveBeenCalled();
