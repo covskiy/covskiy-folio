@@ -2,7 +2,13 @@
 // от окружения сборки (на Vercel tsc запускается из другого cwd).
 import process from "node:process";
 
-const API_ROOT = "https://api.telegram.org";
+// Корень Bot API: дефолт — официальный api.telegram.org; env-оверрайд — только
+// для локального смоука против мока (bot/dev/mock-telegram-api.mjs), на прод не
+// задавать. Резолвится на вызов, не при импорте: подмена env после старта
+// процесса остаётся видимой (тот же принцип, что у тестов с vi.stubEnv).
+function apiRoot(): string {
+  return process.env.TELEGRAM_API_ROOT?.trim().replace(/\/+$/, "") || "https://api.telegram.org";
+}
 
 /**
  * Чат Telegram — подмножество полей Bot API, нужное боту.
@@ -50,7 +56,7 @@ async function tgCall<T>(method: string, payload: unknown): Promise<T> {
   const token = process.env.TELEGRAM_BOT_TOKEN;
   if (!token) throw new Error("TELEGRAM_BOT_TOKEN не задан");
 
-  const response = await fetch(`${API_ROOT}/bot${token}/${method}`, {
+  const response = await fetch(`${apiRoot()}/bot${token}/${method}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
