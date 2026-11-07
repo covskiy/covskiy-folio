@@ -1,8 +1,10 @@
-import process from "node:process";
 // Тип инстанса логгера — структурная подмена в тестах без контрактов-файлов.
 import type { Logger } from "./log.js";
 // Единое определение сообщения диалога живёт в store.ts — дублировать нельзя.
 import type { ChatMessage } from "./store.js";
+// config — готовый типизированный слайс llm; дефолтный инстанс для рантайма.
+import { config } from "./config.js";
+import type { AppConfig } from "./config.js";
 
 /**
  * Сообщение для LLM-протокола: история диалога (ChatMessage, user/assistant)
@@ -16,10 +18,14 @@ export type LlmMessage = ChatMessage | { role: "system"; content: string };
  * endpoint (Ollama Cloud, llama.cpp, …). Никакой доменной логики: system-промт
  * собирает brain (prompt.ts), транспорт получает ГОТОВЫЙ массив сообщений.
  *
+ * Транспорт не знает, КАК парсится env: config.ts отдаёт готовый типизированный
+ * слайс llm (baseUrl без слэшей, ключ trim'нутый, числа с дефолтами) — здесь
+ * только склейка URL и fetch-вызов.
+ *
  * Зависимости инжектируются через deps и резолвятся НА КАЖДЫЙ вызов, а не при
- * создании фабрики: подмена глобального fetch (vi.stubGlobal) или env
- * (vi.stubEnv / мутация объекта) после import должна быть видна — иначе тесты
- * и логика «env запекается в деплой» ломаются незаметно.
+ * создании фабрики: подмена глобального fetch (vi.stubEnv / vi.stubGlobal) или
+ * config после import должна быть видна — иначе тесты и логика «env запекается
+ * в деплой» ломаются незаметно.
  *
  * Дублирование «fetch + timeout + JSON» с telegram-api и redis-rest оставлено
  * сознательно: у трёх мест разная семантика ошибок (throw / ok:false /
@@ -28,8 +34,8 @@ export type LlmMessage = ChatMessage | { role: "system"; content: string };
 
 /** Зависимости транспорта — точки инъекции для тестов; в рантайме createLlm(). */
 export interface LlmDeps {
-  /** Источник LLM_*-переменных; по умолчанию process.env. */
-  env?: NodeJS.ProcessEnv;
+  /** Готовый конфиг; по умолчанию дефолтный config из config.ts (process.env). */
+  config?: AppConfig;
   /** Подмена сети; по умолчанию глобальный fetch. */
   fetchImpl?: typeof fetch;
   /** Часы для latencyMs в ping; по умолчанию Date.now. */
@@ -52,63 +58,29 @@ export interface LlmPing {
   error?: string;
 }
 
-// Дефолт таймаута запроса к LLM. env LLM_TIMEOUT_MS (мс) переопределяет его
-// на каждый вызов — как остальные LLM_*: локальные модели с reasoning отвечают
-// дольше прода, их лимит живёт в .env.local, не в коде. Мусор/ноль в env —
-// снова дефолт (посетитель прод-сайта не должен ждать минуту).
-const LLM_TIMEOUT_DEFAULT_MS = 15_000;
-
-// Потолок генерации: без него ответ мог быть простынёй на всю квоту, а история
-// хранит его целиком и тащит в промт каждого следующего запроса — атака
-// «выдай максимум текста» сжигала квоту ускоряясь. env LLM_MAX_TOKENS
-// переопределяет (паттерн выше: мусор/ноль — снова дефолт).
-const LLM_MAX_TOKENS_DEFAULT = 1_024;
-
+// Таймаут каждой пробы ping — не env (health-check не настраивают под
+// провайдера), поэтому живёт здесь, а не в config.ts.
 const LLM_PING_TIMEOUT_MS = 10_000;
-
-interface LlmConfig {
-  baseUrl: string;
-  apiKey: string | undefined;
-  model: string;
-}
-
-// env приходит аргументом (уже зарезолвенный на вызов) — читаем только его.
-function llmConfig(env: NodeJS.ProcessEnv): LlmConfig | null {
-  const baseUrl = env.LLM_BASE_URL?.trim().replace(/\/+$/, "");
-  const model = env.LLM_MODEL?.trim();
-  if (!baseUrl || !model) return null;
-  return { baseUrl, apiKey: env.LLM_API_KEY?.trim() || undefined, model };
-}
 
 /**
  * Фабрика транспорта: возвращает { chat, ping }. deps резолвятся на каждый
- * вызов chat/ping — подмена fetch/env после создания инстанса работает.
- * @param {LlmDeps} deps - Инъекции env/fetchImpl/clock/log; без аргументов —
- *   глобальный fetch и process.env, как раньше.
+ * вызов chat/ping — подмена fetch/config после создания инстанса работает.
+ * @param {LlmDeps} deps - Инъекции config/fetchImpl/clock/log; без аргументов —
+ *   глобальный fetch и дефолтный config (process.env), как раньше.
  * @returns chat(messages) — бросает при любой проблеме; ping() — никогда не бросает.
  */
 export function createLlm(deps: LlmDeps = {}) {
-  // Мусор/ноль в env-числах — дефолт (Number("abc") === NaN → falsy).
-  function timeoutMs(env: NodeJS.ProcessEnv): number {
-    return Number(env.LLM_TIMEOUT_MS) || LLM_TIMEOUT_DEFAULT_MS;
-  }
-
-  function maxTokens(env: NodeJS.ProcessEnv): number {
-    return Number(env.LLM_MAX_TOKENS) || LLM_MAX_TOKENS_DEFAULT;
-  }
-
   /**
    * Запрос к chat/completions с готовым массивом сообщений.
    * @param {LlmMessage[]} messages - Готовые сообщения (system ставит brain).
    * @returns {Promise<string>} Обрезанный текст ответа.
    * @throws «LLM не настроен…» / «LLM endpoint вернул N» / «LLM вернул пустой
-   *   ответ» / сетевые ошибки и таймаут (env LLM_TIMEOUT_MS, дефолт 15 с).
+   *   ответ» / сетевые ошибки и таймаут (LLM_TIMEOUT_MS, дефолт 15 с).
    */
   async function chat(messages: LlmMessage[]): Promise<string> {
-    // Резолв на вызов: подмена глобального fetch/env после импорта видна.
-    const env = deps.env ?? process.env;
+    // Резолв на вызов: подмена глобального fetch/config после импорта видна.
     const doFetch = deps.fetchImpl ?? fetch;
-    const cfg = llmConfig(env);
+    const cfg = (deps.config ?? config).llm;
     if (!cfg) throw new Error("LLM не настроен: нужны LLM_BASE_URL и LLM_MODEL");
 
     const response = await doFetch(`${cfg.baseUrl}/chat/completions`, {
@@ -121,9 +93,9 @@ export function createLlm(deps: LlmDeps = {}) {
         model: cfg.model,
         messages,
         temperature: 0.3,
-        max_tokens: maxTokens(env),
+        max_tokens: cfg.maxTokens,
       }),
-      signal: AbortSignal.timeout(timeoutMs(env)),
+      signal: AbortSignal.timeout(cfg.timeoutMs),
     });
 
     if (!response.ok) {
@@ -146,16 +118,15 @@ export function createLlm(deps: LlmDeps = {}) {
    * сначала GET /models, при отказе — минимальный POST /chat/completions.
    * Таймаут каждой пробы — 10 с; latencyMs считается по clock из deps.
    *
-   * Env: LLM_BASE_URL + LLM_MODEL (без них — {ok:false, error:"не настроен"}),
-   * LLM_API_KEY (опционален, уходит как Bearer).
+   * Не настроен (config.llm === null) — {ok:false, error:"не настроен"};
+   * apiKey из конфига уходит как Bearer.
    *
    * @returns {Promise<LlmPing>} ok/latencyMs/detail при успехе, ok:false + error при отказе.
    */
   async function ping(): Promise<LlmPing> {
     // Резолв на вызов — по тем же причинам, что и в chat.
-    const env = deps.env ?? process.env;
     const doFetch = deps.fetchImpl ?? fetch;
-    const cfg = llmConfig(env);
+    const cfg = (deps.config ?? config).llm;
     if (!cfg) {
       return { ok: false, error: "не настроен: нужны LLM_BASE_URL и LLM_MODEL" };
     }

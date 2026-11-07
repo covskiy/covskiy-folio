@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { createConfig } from "../config";
 import { answer, createBrain, type Llm } from "../brain/brain";
 import { createLlm, type LlmMessage, type LlmPing } from "../llm";
 import type { ChatMessage } from "../store";
@@ -89,8 +90,8 @@ describe("answer: dumb-режим (fallback)", () => {
   });
 
   it("LLM не настроен (транспорт бросает) → dumb-ответ по справке", async () => {
-    // Реальный транспорт с пустым env — та же ситуация «без LLM в env вообще».
-    const { answer: brainAnswer } = createBrain({ llm: createLlm({ env: {} }) });
+    // Реальный транспорт с пустым config — та же ситуация «без LLM в env вообще».
+    const { answer: brainAnswer } = createBrain({ llm: createLlm({ config: createConfig({}) }) });
 
     const result = await brainAnswer("расскажи про сайт");
 
