@@ -21,7 +21,10 @@ function ok(result: unknown): Response {
 /** Логгер-шпион: собирает warn-строки (с префиксом модуля) вместо console. */
 function makeLog(): { log: Logger; warns: string[] } {
   const warns: string[] = [];
-  const log = createLogger({ env: {}, out: { warn: (line: string) => warns.push(line) } });
+  const log = createLogger({
+    config: createConfig({}),
+    out: { warn: (line: string) => warns.push(line) },
+  });
   return { log, warns };
 }
 

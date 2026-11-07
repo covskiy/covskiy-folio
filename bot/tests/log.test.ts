@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { createConfig } from "../config";
 import { createLogger, log } from "../log";
 
 // Время — мутируемое замыкание, инжектируется через deps: fake timers не нужны,
@@ -20,10 +21,10 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe("log: порог из LOG_LEVEL (инъекция env/out)", () => {
+describe("log: порог из LOG_LEVEL (инъекция config/out)", () => {
   it("дефолт warn: debug/info скрыты, warn/error пишутся с префиксом модуля", () => {
     const out = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
-    const logger = createLogger({ env: {}, out });
+    const logger = createLogger({ config: createConfig({}), out });
 
     logger.debug("t", "d");
     logger.info("t", "i");
@@ -38,7 +39,7 @@ describe("log: порог из LOG_LEVEL (инъекция env/out)", () => {
 
   it("LOG_LEVEL=debug открывает трейсы", () => {
     const out = { debug: vi.fn() };
-    const logger = createLogger({ env: { LOG_LEVEL: "debug" }, out });
+    const logger = createLogger({ config: createConfig({ LOG_LEVEL: "debug" }), out });
 
     logger.debug("t", "видно");
 
@@ -47,7 +48,7 @@ describe("log: порог из LOG_LEVEL (инъекция env/out)", () => {
 
   it("мусор в LOG_LEVEL откатывается к дефолту warn", () => {
     const out = { debug: vi.fn() };
-    const logger = createLogger({ env: { LOG_LEVEL: "не-уровень" }, out });
+    const logger = createLogger({ config: createConfig({ LOG_LEVEL: "не-уровень" }), out });
 
     logger.debug("t", "скрыто");
 

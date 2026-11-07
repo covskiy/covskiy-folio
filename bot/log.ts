@@ -1,4 +1,6 @@
-import process from "node:process";
+// config — готовый типизированный слайс logLevel; дефолтный инстанс для
+// рантайма (парсинг LOG_LEVEL — в config.ts, здесь только сравнение порогов).
+import { config, type AppConfig, type LogLevel } from "./config.js";
 
 /**
  * Единая точка логирования серверной части. Зачем не голый console.*: уровень
@@ -16,11 +18,14 @@ import process from "node:process";
  * Vercel Observability маппит console.debug/info/warn/error на severity —
  * фильтрация по уровню в дашборде работает без нашего участия. Метод консоли
  * выбирается на каждый вызов, не кэшируется: тесты spying console.* видят
- * вызовы через дефолтный логгер. То же с env — резолвится на каждый вызов:
- * подмена через vi.stubEnv на дефолтном log продолжает работать.
+ * вызовы через дефолтный логгер. То же с уровнем — ленивый геттер
+ * config.logLevel перечитывает env на каждый вызов: подмена через vi.stubEnv
+ * на дефолтном log продолжает работать.
  */
 
-type Level = "debug" | "info" | "warn" | "error";
+// Локальное имя типа сохранено для минимального диффа; единственное
+// определение уровней теперь в config.ts (там же парсинг LOG_LEVEL).
+type Level = LogLevel;
 
 // Порядок важности: строки ниже порога в лог не попадают.
 const LEVEL_ORDER: Record<Level, number> = { debug: 0, info: 1, warn: 2, error: 3 };
@@ -30,8 +35,8 @@ const LEVEL_ORDER: Record<Level, number> = { debug: 0, info: 1, warn: 2, error: 
  * createLogger() без аргументов (env/now/out берутся как раньше).
  */
 export interface LoggerDeps {
-  /** Источник LOG_LEVEL; по умолчанию process.env. */
-  env?: NodeJS.ProcessEnv;
+  /** Готовый конфиг; по умолчанию дефолтный config из config.ts (process.env). */
+  config?: AppConfig;
   /** Часы для троттлинга; по умолчанию Date.now. */
   now?: () => number;
   // Partial: тесты подменяют только те методы, которые проверяют; отсутствующие
@@ -48,12 +53,11 @@ export interface LoggerDeps {
 export function createLogger(deps: LoggerDeps = {}) {
   const lastSeenAt = new Map<string, number>();
 
-  // env резолвим на каждый вызов, не захватываем при создании: подмена через
-  // vi.stubEnv на дефолтном log продолжает работать.
+  // Геттер config.logLevel ленивый (env перечитывается на доступ), поэтому
+  // порог резолвим на каждый вызов: подмена через vi.stubEnv на дефолтном log
+  // продолжает работать.
   function threshold(): Level {
-    const env = deps.env ?? process.env;
-    const raw = env.LOG_LEVEL?.trim().toLowerCase();
-    return raw && raw in LEVEL_ORDER ? (raw as Level) : "warn";
+    return (deps.config ?? config).logLevel;
   }
 
   function enabled(level: Level): boolean {
