@@ -5,11 +5,15 @@ const SECRET = "test-secret";
 const URL = "http://localhost/api/telegram";
 const SECRET_HEADER = { "x-telegram-bot-api-secret-token": SECRET };
 
-function updateWithText(text: string): Request {
+function updateWithText(text: string, updateId?: number): Request {
   return new Request(URL, {
     method: "POST",
     headers: { "Content-Type": "application/json", ...SECRET_HEADER },
-    body: JSON.stringify({ message: { message_id: 1, chat: { id: 42 }, text } }),
+    // update_id: undefined не попадает в JSON — старые тесты апдейт без него.
+    body: JSON.stringify({
+      update_id: updateId,
+      message: { message_id: 1, chat: { id: 42 }, text },
+    }),
   });
 }
 
@@ -245,9 +249,11 @@ describe("handleTelegramWebhook", () => {
  * Полный стек на Map-«Redis»: REST-команды Upstash обслуживаются локальной Map
  * (get/set/del), Bot API — успехом, LLM — фиксированным ответом.
  * @param {string} llmText - Ответ, который возвращает LLM.
- * @param {string} [replySendFailsText] - Если задан: sendMessage с таким текстом
- *   падает (ok:false) — для проверки порядка «отправить → записать»; fallback
- *   «технические неполадки» при этом должен пройти.
+ * @param {string} [replySendFailsText] - Если задан: первая отправка sendMessage
+ *   с таким текстом падает (ok:false) — для проверки порядка «отправить →
+ *   записать» и отсутствия маркера дедупликации при упавшей обработке;
+ *   повторная отправка того же текста проходит, fallback «технические
+ *   неполадки» проходит всегда.
  */
 function stubRedisBotApiAndLlm(
   llmText: string,
@@ -263,6 +269,7 @@ function stubRedisBotApiAndLlm(
   stubLlm();
   const store = new Map<string, string>();
   const counters = new Map<string, number>();
+  let replySendFailures = 0;
   const fetchMock = vi.fn(async (input: unknown, init?: RequestInit) => {
     const url = String(input);
     if (url === "http://upstash.test") {
@@ -298,10 +305,13 @@ function stubRedisBotApiAndLlm(
       if (url.includes("/sendMessage")) {
         const payload = JSON.parse(String(init?.body)) as { text?: string };
         if (payload.text === replySendFailsText) {
-          return new Response(JSON.stringify({ ok: false, description: "падение отправки" }), {
-            status: 200,
-            headers: { "Content-Type": "application/json" },
-          });
+          replySendFailures += 1;
+          if (replySendFailures === 1) {
+            return new Response(JSON.stringify({ ok: false, description: "падение отправки" }), {
+              status: 200,
+              headers: { "Content-Type": "application/json" },
+            });
+          }
         }
         return new Response(
           JSON.stringify({ ok: true, result: { message_id: 2, chat: { id: 42 } } }),
@@ -487,5 +497,106 @@ describe("handleTelegramWebhook: fail-open (Upstash задан, но REST все
       true,
     );
     expect(fetchMock.mock.calls.some(([url]) => String(url).includes("/sendMessage"))).toBe(true);
+  });
+});
+
+describe("handleTelegramWebhook: дедупликация по update_id", () => {
+  it("повтор после успеха гасится: LLM и sendMessage ровно один раз, оба ответа 200 {ok:true}", async () => {
+    const { fetchMock, store } = stubRedisBotApiAndLlm("ответ brain");
+
+    const first = await handleTelegramWebhook(updateWithText("кто ты?", 987654));
+    const second = await handleTelegramWebhook(updateWithText("кто ты?", 987654));
+
+    // Telegram ждёт 2xx на обе доставки, но обрабатывается только первая
+    expect(first.status).toBe(200);
+    await expect(first.json()).resolves.toEqual({ ok: true });
+    expect(second.status).toBe(200);
+    await expect(second.json()).resolves.toEqual({ ok: true });
+
+    const llmCalls = fetchMock.mock.calls.filter(([url]) =>
+      String(url).includes("chat/completions"),
+    );
+    expect(llmCalls).toHaveLength(1);
+    const replySends = fetchMock.mock.calls.filter(
+      ([url, init]) =>
+        String(url).includes("/sendMessage") &&
+        (JSON.parse(String(init?.body)) as { text?: string }).text === "ответ brain",
+    );
+    expect(replySends).toHaveLength(1);
+    // Маркер поставлен только после успешной обработки
+    expect(store.get("tg:seen:987654")).toBe("1");
+  });
+
+  it("повтор после ошибки доходит до LLM: маркер не ставится, ответ доставлен со второй попытки", async () => {
+    // Первая отправка ответа падает → обработка бросила → маркера нет,
+    // Telegram повторит доставку.
+    const { fetchMock, store } = stubRedisBotApiAndLlm("ответ brain", "ответ brain");
+
+    const first = await handleTelegramWebhook(updateWithText("кто ты?", 111222));
+    expect(first.status).toBe(200);
+    expect(store.has("tg:seen:111222")).toBe(false);
+
+    const second = await handleTelegramWebhook(updateWithText("кто ты?", 111222));
+
+    expect(second.status).toBe(200);
+    // LLM вызван повторно — дедупликация не съела ретрай
+    const llmCalls = fetchMock.mock.calls.filter(([url]) =>
+      String(url).includes("chat/completions"),
+    );
+    expect(llmCalls).toHaveLength(2);
+    // Fallback «неполадки» был только после первой доставки — второй POST
+    // доставил настоящий ответ, а не извинение
+    const fallbackSends = fetchMock.mock.calls.filter(
+      ([url, init]) =>
+        String(url).includes("/sendMessage") &&
+        String((JSON.parse(String(init?.body)) as { text?: string }).text).includes("неполадки"),
+    );
+    expect(fallbackSends).toHaveLength(1);
+    // После успешного повтора маркер установлен, пара записана в историю
+    expect(store.get("tg:seen:111222")).toBe("1");
+    expect(store.get("chat:tg:42")).toBe(
+      JSON.stringify([
+        { role: "user", content: "кто ты?" },
+        { role: "assistant", content: "ответ brain" },
+      ]),
+    );
+  });
+
+  it("без Redis — fail-open: два одинаковых апдейта обрабатываются полноценно", async () => {
+    vi.stubEnv("TELEGRAM_WEBHOOK_SECRET", SECRET);
+    vi.stubEnv("TELEGRAM_BOT_TOKEN", "test-token");
+    vi.stubEnv("UPSTASH_REDIS_REST_URL", "http://upstash.test");
+    vi.stubEnv("UPSTASH_REDIS_REST_TOKEN", "test-token");
+    stubLlm();
+    const fetchMock = vi.fn(async (input: unknown) => {
+      if (String(input) === "http://upstash.test") {
+        throw new Error("ECONNREFUSED");
+      }
+      if (String(input).includes("api.telegram.org")) {
+        return new Response(JSON.stringify({ ok: true, result: { message_id: 2 } }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      return new Response(JSON.stringify({ choices: [{ message: { content: "ответ" } }] }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const first = await handleTelegramWebhook(updateWithText("кто ты?", 333444));
+    const second = await handleTelegramWebhook(updateWithText("кто ты?", 333444));
+
+    expect(first.status).toBe(200);
+    expect(second.status).toBe(200);
+    // Маркер недоступен → дедупликация отключена, обе доставки отработали целиком
+    const llmCalls = fetchMock.mock.calls.filter(([url]) =>
+      String(url).includes("chat/completions"),
+    );
+    expect(llmCalls).toHaveLength(2);
+    const sends = fetchMock.mock.calls.filter(([url]) => String(url).includes("/sendMessage"));
+    expect(sends).toHaveLength(2);
   });
 });

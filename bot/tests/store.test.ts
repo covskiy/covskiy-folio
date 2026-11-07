@@ -6,8 +6,11 @@ import {
   getValue,
   HISTORY_TTL_SECONDS,
   incrCounter,
+  isSeen,
+  markSeen,
   setValue,
   tgKey,
+  tgSeenKey,
   webKey,
 } from "../store";
 
@@ -191,9 +194,57 @@ describe("store: REST-команды", () => {
     await expect(incrCounter("rate:web:1", 3600)).resolves.toBeNull();
   });
 
-  it("помощники ключей формируют префиксы chat:web / chat:tg", () => {
+  it("помощники ключей формируют префиксы chat:web / chat:tg / tg:seen", () => {
     expect(webKey("abc")).toBe("chat:web:abc");
     expect(tgKey(42)).toBe("chat:tg:42");
+    expect(tgSeenKey(987654)).toBe("tg:seen:987654");
+  });
+});
+
+describe("store: дедупликация Telegram-апдейтов (isSeen / markSeen)", () => {
+  it("isSeen: без маркера false; после markSeen true", async () => {
+    const store = new Map<string, string>();
+    stubUpstash((command) => {
+      if (command[0] === "get") return ok(store.get(String(command[1])) ?? null);
+      store.set(String(command[1]), String(command[2]));
+      return ok("OK");
+    });
+
+    await expect(isSeen("tg:seen:987654")).resolves.toBe(false);
+    await markSeen("tg:seen:987654", 3600);
+    await expect(isSeen("tg:seen:987654")).resolves.toBe(true);
+  });
+
+  it("markSeen шлёт [set, key, 1, EX, ttl, NX]: маркер «1», NX — страховка от гонки", async () => {
+    const fetchMock = stubUpstash(() => ok("OK"));
+
+    await markSeen("tg:seen:987654", 3600);
+
+    expect(JSON.parse(String((fetchMock.mock.calls[0] as [string, RequestInit])[1].body))).toEqual([
+      "set",
+      "tg:seen:987654",
+      "1",
+      "EX",
+      "3600",
+      "NX",
+    ]);
+  });
+
+  it("fail-open: REST падает исключением → isSeen false, markSeen no-op без throw", async () => {
+    vi.stubEnv("UPSTASH_REDIS_REST_URL", REDIS_URL);
+    vi.stubEnv("UPSTASH_REDIS_REST_TOKEN", "test-token");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        throw new Error("ECONNREFUSED");
+      }),
+    );
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    // Дедупликация — улучшение, а не условие работы: любая проблема Redis
+    // означает «не видели» и «не запомнили», обработка продолжается.
+    await expect(isSeen("tg:seen:987654")).resolves.toBe(false);
+    await expect(markSeen("tg:seen:987654", 3600)).resolves.toBeUndefined();
   });
 });
 

@@ -170,6 +170,33 @@ export async function setValue(key: string, value: string, ttlSeconds: number): 
   await runCommand(["set", key, value, "EX", String(ttlSeconds)]);
 }
 
+// Дедупликация Telegram-апдейтов: Telegram — at-least-once, при не-2xx или
+// потерянном ответе он повторяет ТОТ ЖЕ JSON с тем же update_id. Повтор
+// неотличим от нового вопроса: второй вызов LLM, вторая пара в истории.
+/**
+ * Видели ли уже этот апдейт (GET маркера дедупликации).
+ * Fail-open: любая проблема Redis → false («не видели») — дедупликация
+ * улучшение, а не условие работы: бот обязан отвечать и без Redis.
+ * @param {string} key - Ключ маркера (см. tgSeenKey).
+ * @returns {Promise<boolean>} true, если маркер стоит (непустая строка — «1»).
+ */
+export async function isSeen(key: string): Promise<boolean> {
+  const result = await runCommand(["get", key]);
+  return typeof result === "string" && result.length > 0;
+}
+
+/**
+ * Поставить маркер «апдейт обработан» (SET … EX NX). NX — при гипотетической
+ * гонке (Telegram один апдейт параллельно не шлёт, но страховка дешёвая)
+ * не затирает существующий маркер.
+ * @param {string} key - Ключ маркера (см. tgSeenKey).
+ * @param {number} ttlSeconds - Время жизни маркера в секундах.
+ * @returns {Promise<void>} Ничего; при недоступности Redis — no-op (fail-open, не бросает).
+ */
+export async function markSeen(key: string, ttlSeconds: number): Promise<void> {
+  await runCommand(["set", key, "1", "EX", String(ttlSeconds), "NX"]);
+}
+
 /**
  * Удалить ключ (DEL).
  * @param {string} key - Ключ Redis.
@@ -302,4 +329,13 @@ export function webKey(sessionId: string): string {
  */
 export function tgKey(chatId: number | string): string {
   return `chat:tg:${chatId}`;
+}
+
+/**
+ * Ключ маркера дедупликации Telegram-апдейта (см. isSeen/markSeen).
+ * @param {number|string} updateId - Идентификатор апдейта Telegram.
+ * @returns {string} Ключ вида `tg:seen:{updateId}`.
+ */
+export function tgSeenKey(updateId: number | string): string {
+  return `tg:seen:${updateId}`;
 }

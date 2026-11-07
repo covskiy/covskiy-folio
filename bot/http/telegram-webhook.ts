@@ -3,7 +3,15 @@ import { log } from "../log.js";
 import { answer } from "../brain/brain.js";
 import { knowledgeEntries } from "../brain/prompt.js";
 import { hitRateLimit } from "../rate-limit.js";
-import { appendHistory, clearHistory, getHistory, tgKey } from "../store.js";
+import {
+  appendHistory,
+  clearHistory,
+  getHistory,
+  isSeen,
+  markSeen,
+  tgKey,
+  tgSeenKey,
+} from "../store.js";
 import {
   answerCallbackQuery,
   editMessageText,
@@ -40,6 +48,9 @@ const RATE_LIMIT_TEXT =
 // На /start — первые 3 элемента справки, те же темы, что чипсы вебчата.
 const START_BUTTONS_COUNT = 3;
 
+// Час — с запасом перекрывает ретраи Telegram по одному апдейту, ключи чистятся сами.
+const SEEN_TTL_SECONDS = 3_600;
+
 interface TgCallbackQuery {
   id: string;
   data?: string;
@@ -49,6 +60,9 @@ interface TgCallbackQuery {
 interface TgUpdate {
   message?: TgMessage;
   callback_query?: TgCallbackQuery;
+  // Telegram всегда шлёт update_id у известных нам типов апдейтов; отсутствие
+  // (неизвестный тип или битый JSON) — не повод ронять обработку.
+  update_id?: number;
 }
 
 // callback_data ограничен 64 байтами, поэтому кнопка несёт только индекс,
@@ -195,9 +209,31 @@ export async function handleTelegramWebhook(request: Request): Promise<Response>
     return Response.json({ ok: true });
   }
 
+  // Дедупликация по update_id: Telegram — at-least-once, при не-2xx или
+  // потерянном ответе он повторяет ТОТ ЖЕ JSON, а повтор неотличим от нового
+  // вопроса (второй вызов LLM, вторая пара в истории). Маркер ставится ПОСЛЕ
+  // успешной обработки, проверка — ДО: маркер до работы ломает сценарий
+  // «функция убита по таймауту» — повтор увидел бы маркер и молча не ответил
+  // бы, это хуже дубля. Параллельной доставки одного апдейта Telegram не
+  // делает — повтор возможен только после неудачи, то есть до установки
+  // маркера; NX в markSeen — страховка от гипотетической гонки.
+  //
+  // Дедупликация до hitRateLimit (лимитер внутри answerAsQuestion): иначе
+  // повтор съедает хит лимита, и пользователь получает «слишком много
+  // вопросов» из-за доставки одного сообщения. isSeen fail-open — без Redis
+  // дедупликация просто отключается.
+  const seenKey = typeof update.update_id === "number" ? tgSeenKey(update.update_id) : null;
+  if (seenKey && (await isSeen(seenKey))) {
+    log.debug("telegram-webhook", `дубль update ${update.update_id} — уже обработан, пропускаю`);
+    return Response.json({ ok: true });
+  }
+
   if (update.callback_query) {
     try {
       await handleCallbackQuery(update.callback_query);
+      // Маркер только после успешной обработки: если она бросила — маркера нет,
+      // и повтор дойдёт до LLM.
+      if (seenKey) await markSeen(seenKey, SEEN_TTL_SECONDS);
     } catch (error) {
       log.error(
         "telegram-webhook",
@@ -217,12 +253,18 @@ export async function handleTelegramWebhook(request: Request): Promise<Response>
   const message = update.message;
   if (message?.text) {
     try {
-      log.debug("telegram-webhook", `апдейт от ${message.chat.id}: ${message.text.slice(0, 80)}`);
+      log.debug(
+        "telegram-webhook",
+        `апдейт ${update.update_id ?? "—"} от ${message.chat.id}: ${message.text.slice(0, 80)}`,
+      );
       if (message.text.startsWith("/")) {
         await handleCommand(message.chat.id, message.text);
       } else {
         await answerAsQuestion(message.chat.id, message.text);
       }
+      // Маркер после успешной обработки (см. комментарий к дедупликации выше):
+      // бросок dispatch — маркера нет, Telegram повторит и дойдёт до LLM.
+      if (seenKey) await markSeen(seenKey, SEEN_TTL_SECONDS);
       log.debug("telegram-webhook", `ответ отправлен в ${message.chat.id}`);
     } catch (error) {
       log.error("telegram-webhook", error instanceof Error ? error.message : String(error));
