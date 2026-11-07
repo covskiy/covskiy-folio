@@ -46,6 +46,16 @@ export interface TgInlineKeyboardMarkup {
   inline_keyboard: TgInlineKeyboardButton[][];
 }
 
+/**
+ * Вызов метода Bot API. При ok:false бросает; если Telegram вернул
+ * parameters.retry_after (flood-лимит, секунды) — число добавляется в текст
+ * ошибки хвостом «(retry_after: Ns)».
+ * @param {string} method - Имя метода Bot API.
+ * @param {unknown} payload - Тело запроса (JSON-сериализуемый объект).
+ * @returns {Promise<T>} Поле result ответа Bot API.
+ * @throws {Error} Не задан TELEGRAM_BOT_TOKEN, ошибка сети или ok:false
+ *   (описание/status из ответа, плюс retry_after при flood-лимите).
+ */
 async function tgCall<T>(method: string, payload: unknown): Promise<T> {
   // Срез резолвим на каждый вызов, не при импорте: геттеры ленивые, подмена
   // env после старта процесса остаётся видимой (тот же принцип, что у тестов
@@ -65,9 +75,16 @@ async function tgCall<T>(method: string, payload: unknown): Promise<T> {
     ok: boolean;
     result?: T;
     description?: string;
+    parameters?: { retry_after?: number };
   };
   if (!data.ok) {
-    throw new Error(`Telegram ${method} failed: ${data.description ?? response.status}`);
+    // retry_after (flood) в текст ошибки, не в сон: ожидание здесь сжигает время
+    // инвокации, а повторную доставку делает сам Telegram.
+    const after = data.parameters?.retry_after;
+    throw new Error(
+      `Telegram ${method} failed: ${data.description ?? response.status}` +
+        (after !== undefined ? ` (retry_after: ${after}s)` : ""),
+    );
   }
   return data.result as T;
 }
