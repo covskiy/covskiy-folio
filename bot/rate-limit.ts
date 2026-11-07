@@ -24,9 +24,12 @@ export async function hitRateLimit(bucket: string): Promise<boolean> {
   const key = `rate:${bucket}`;
   const counter = await incrCounter(key, windowSeconds);
   if (counter !== null && counter > max) {
-    // IP/chatId в логе — не секрет (секреты только token/key), владельцу он
-    // нужен, чтобы видеть источник шторма. Троттлинг — по бакету, не по тексту.
-    log.warnThrottled("rate-limit", key, `лимит исчерпан: ${bucket}`);
+    // Ключ троттлинга константный, а не бакет: уникальный IP/чат в ключе
+    // разрастал бы Map троттлинга логгера навсегда (тёплый инстанс живёт долго,
+    // бакетов неограниченно, а веб-бакет выводится из заголовков IP — атакующий
+    // дёшево генерирует уникальные ключи). Цена: троттлинг общий на все бакеты
+    // в течение интервала; источник шторма и так виден в тексте сообщения.
+    log.warnThrottled("rate-limit", "exceeded", `лимит исчерпан: ${bucket}`);
     return false;
   }
   return true;
