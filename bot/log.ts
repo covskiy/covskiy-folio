@@ -98,4 +98,10 @@ export function createLogger(deps: LoggerDeps = {}) {
   };
 }
 
+/**
+ * Тип инстанса логгера — для фабрик, принимающих log как зависимость
+ * (bot/llm.ts, bot/redis-rest.ts, …): структурная подмена в тестах без контрактов-файлов.
+ */
+export type Logger = ReturnType<typeof createLogger>;
+
 export const log = createLogger();

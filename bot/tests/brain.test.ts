@@ -1,168 +1,116 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { answer } from "../brain/brain";
+import { answer, createBrain, type Llm } from "../brain/brain";
+import { createLlm, type LlmMessage, type LlmPing } from "../llm";
 import type { ChatMessage } from "../store";
-
-function llmResponse(text: string): Response {
-  return new Response(JSON.stringify({ choices: [{ message: { content: text } }] }), {
-    status: 200,
-    headers: { "Content-Type": "application/json" },
-  });
-}
 
 afterEach(() => {
   vi.unstubAllEnvs();
   vi.unstubAllGlobals();
 });
 
-describe("answer: LLM-ветка", () => {
-  it("ходит в ${LLM_BASE_URL}/chat/completions с Bearer и моделью", async () => {
-    vi.stubEnv("LLM_BASE_URL", "http://127.0.0.1:9999/v1");
-    vi.stubEnv("LLM_API_KEY", "secret-key");
-    vi.stubEnv("LLM_MODEL", "test-model");
-    const fetchMock = vi.fn(async (_url: string | URL, _init?: RequestInit) =>
-      llmResponse("Ответ от LLM"),
-    );
-    vi.stubGlobal("fetch", fetchMock);
+/** Фейковый транспорт: chat по сценарию, ping — заглушка (brain его не зовёт). */
+function fakeLlm(chatImpl: (messages: LlmMessage[]) => Promise<string>): Llm {
+  return {
+    chat: vi.fn(chatImpl),
+    ping: vi.fn(async (): Promise<LlmPing> => ({ ok: true })),
+  };
+}
 
-    const result = await answer("привет");
+/** Шпион-логгер: полная форма Logger, все методы — vi.fn. */
+function makeLog() {
+  return {
+    debug: vi.fn(),
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+    warnThrottled: vi.fn(),
+  };
+}
+
+/** Транспорт, который всегда падает — brain должен уходить в dumb без сети. */
+function brokenLlm(): Llm {
+  return fakeLlm(async () => {
+    throw new Error("LLM endpoint вернул 500");
+  });
+}
+
+describe("answer: LLM-ветка", () => {
+  it('успешный chat → {mode:"llm"}; system-промт и вопрос собирает brain', async () => {
+    const llm = fakeLlm(async () => "Ответ от LLM");
+    const log = makeLog();
+    const { answer: brainAnswer } = createBrain({ llm, log });
+
+    const result = await brainAnswer("привет");
 
     expect(result).toEqual({ text: "Ответ от LLM", mode: "llm" });
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    const [url, requestInit] = fetchMock.mock.calls[0];
-    expect(String(url)).toBe("http://127.0.0.1:9999/v1/chat/completions");
-    const headers = (requestInit?.headers ?? {}) as Record<string, string>;
-    expect(headers.Authorization).toBe("Bearer secret-key");
-    const body = JSON.parse(String(requestInit?.body)) as {
-      model: string;
-      messages: Array<{ role: string; content: string }>;
-      max_tokens: number;
-    };
-    expect(body.model).toBe("test-model");
-    // Потолок генерации по умолчанию — защита от простыней, раздувающих квоту
-    expect(body.max_tokens).toBe(1_024);
+    expect(log.error).not.toHaveBeenCalled();
+    const messages = (llm.chat as ReturnType<typeof vi.fn>).mock.calls[0][0] as LlmMessage[];
+    expect(messages[0].role).toBe("system");
     // Без истории: system + сам вопрос
-    expect(body.messages[0].role).toBe("system");
-    expect(body.messages).toHaveLength(2);
-    expect(body.messages.at(-1)?.content).toBe("привет");
+    expect(messages).toHaveLength(2);
+    expect(messages.at(-1)).toMatchObject({ role: "user", content: "привет" });
   });
 
-  it("env LLM_MAX_TOKENS переопределяет дефолт; мусор в env — снова дефолт", async () => {
-    vi.stubEnv("LLM_BASE_URL", "http://127.0.0.1:9999/v1");
-    vi.stubEnv("LLM_MODEL", "test-model");
-    const fetchMock = vi.fn(async (_url: string | URL, _init?: RequestInit) => llmResponse("Ок"));
-    vi.stubGlobal("fetch", fetchMock);
-
-    const bodyMaxTokens = (): number => {
-      const lastCall = fetchMock.mock.calls.at(-1);
-      return (JSON.parse(String(lastCall?.[1]?.body)) as { max_tokens: number }).max_tokens;
-    };
-
-    await answer("вопрос");
-    expect(bodyMaxTokens()).toBe(1_024);
-
-    vi.stubEnv("LLM_MAX_TOKENS", "2048");
-    await answer("вопрос");
-    expect(bodyMaxTokens()).toBe(2_048);
-
-    vi.stubEnv("LLM_MAX_TOKENS", "мусор");
-    await answer("вопрос");
-    expect(bodyMaxTokens()).toBe(1_024);
-  });
-
-  it("история: последние 10 сообщений вставляются перед текущим вопросом", async () => {
-    vi.stubEnv("LLM_BASE_URL", "http://127.0.0.1:9999/v1");
-    vi.stubEnv("LLM_MODEL", "test-model");
-    const fetchMock = vi.fn(async (_url: string | URL, _init?: RequestInit) => llmResponse("Ок"));
-    vi.stubGlobal("fetch", fetchMock);
+  it("HISTORY_WINDOW: из 14 сообщений истории в chat уходят ровно 10 последних + вопрос", async () => {
+    const llm = fakeLlm(async () => "Ок");
+    const { answer: brainAnswer } = createBrain({ llm });
 
     const history = Array.from({ length: 14 }, (_, i): ChatMessage => ({
       role: i % 2 === 0 ? "user" : "assistant",
       content: `сообщение ${i}`,
     }));
-    await answer("текущий вопрос", history);
+    await brainAnswer("текущий вопрос", history);
 
-    const [, requestInit] = fetchMock.mock.calls[0];
-    const body = JSON.parse(String(requestInit?.body)) as {
-      messages: Array<{ role: string; content: string }>;
-    };
+    const messages = (llm.chat as ReturnType<typeof vi.fn>).mock.calls[0][0] as LlmMessage[];
     // system + 10 сообщений истории + вопрос
-    expect(body.messages).toHaveLength(12);
-    expect(body.messages[1]).toMatchObject({ content: "сообщение 4" });
-    expect(body.messages[10]).toMatchObject({ content: "сообщение 13" });
-    expect(body.messages[11]).toMatchObject({ role: "user", content: "текущий вопрос" });
-  });
-});
-
-describe("answer: таймаут LLM_TIMEOUT_MS", () => {
-  it("env LLM_TIMEOUT_MS перекрывает дефолт: ответ дольше лимита → dumb", async () => {
-    vi.stubEnv("LLM_BASE_URL", "http://127.0.0.1:9999/v1");
-    vi.stubEnv("LLM_MODEL", "test-model");
-    vi.stubEnv("LLM_TIMEOUT_MS", "10");
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async (_url: string | URL, init?: RequestInit) => {
-        // Мок уважает signal, как реальный fetch — иначе AbortSignal.timeout
-        // в brain не протестировать.
-        await new Promise<void>((resolve, reject) => {
-          const timer = setTimeout(resolve, 50);
-          init?.signal?.addEventListener("abort", () => {
-            clearTimeout(timer);
-            reject(new Error("The operation was aborted"));
-          });
-        });
-        return llmResponse("поздно");
-      }),
-    );
-
-    const result = await answer("вопрос");
-
-    expect(result.mode).toBe("dumb");
-  });
-
-  it("мусор в env LLM_TIMEOUT_MS → работает дефолт 15 с", async () => {
-    vi.stubEnv("LLM_BASE_URL", "http://127.0.0.1:9999/v1");
-    vi.stubEnv("LLM_MODEL", "test-model");
-    vi.stubEnv("LLM_TIMEOUT_MS", "не-число");
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () => {
-        await new Promise((resolve) => setTimeout(resolve, 20));
-        return llmResponse("успел");
-      }),
-    );
-
-    const result = await answer("вопрос");
-
-    expect(result.mode).toBe("llm");
+    expect(messages).toHaveLength(12);
+    expect(messages[0].role).toBe("system");
+    expect(messages[1]).toMatchObject({ content: "сообщение 4" });
+    expect(messages[10]).toMatchObject({ content: "сообщение 13" });
+    expect(messages[11]).toMatchObject({ role: "user", content: "текущий вопрос" });
   });
 });
 
 describe("answer: dumb-режим (fallback)", () => {
-  it("ошибка LLM-endpoint → поиск по справке", async () => {
-    vi.stubEnv("LLM_BASE_URL", "http://127.0.0.1:9999/v1");
-    vi.stubEnv("LLM_MODEL", "test-model");
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () => new Response("boom", { status: 500 })),
-    );
+  it("ошибка chat → dumb-ответ по справке + log.error с причиной", async () => {
+    const llm = brokenLlm();
+    const log = makeLog();
+    const { answer: brainAnswer } = createBrain({ llm, log });
 
-    const result = await answer("как связаться?");
+    const result = await brainAnswer("как связаться?");
 
     expect(result.mode).toBe("dumb");
     expect(result.text).toContain("Telegram");
+    expect(log.error).toHaveBeenCalledTimes(1);
+    expect(log.error).toHaveBeenCalledWith(
+      "brain",
+      expect.stringContaining("LLM недоступен (LLM endpoint вернул 500)"),
+    );
   });
 
-  it("без LLM в env вообще → dumb-ответ по справке", async () => {
-    vi.stubEnv("LLM_BASE_URL", "");
-    vi.stubEnv("LLM_MODEL", "");
+  it("LLM не настроен (транспорт бросает) → dumb-ответ по справке", async () => {
+    // Реальный транспорт с пустым env — та же ситуация «без LLM в env вообще».
+    const { answer: brainAnswer } = createBrain({ llm: createLlm({ env: {} }) });
 
-    const result = await answer("расскажи про сайт");
+    const result = await brainAnswer("расскажи про сайт");
 
     expect(result.mode).toBe("dumb");
     expect(result.text).toContain("Vite");
   });
 
   it("незнакомый вопрос → вежливый fallback, а не чужой параграф", async () => {
+    const { answer: brainAnswer } = createBrain({ llm: brokenLlm() });
+
+    const result = await brainAnswer("когда запуск ракеты на марс?");
+
+    expect(result.mode).toBe("dumb");
+    expect(result.text).toContain("Не нашёл");
+  });
+});
+
+describe("дефолтный экспорт answer", () => {
+  it("переиспользует createBrain: dumb-путь работает без сети", async () => {
+    // Дефолтный llm читает process.env на вызов — пустим его в dumb.
     vi.stubEnv("LLM_BASE_URL", "");
     vi.stubEnv("LLM_MODEL", "");
 

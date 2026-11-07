@@ -1,5 +1,5 @@
-import process from "node:process";
-import { log } from "../log.js";
+import { createLlm } from "../llm.js";
+import { log as rootLog, type Logger } from "../log.js";
 import { knowledgeEntries, systemPrompt, type KnowledgeItem } from "./prompt.js";
 // Единое определение сообщения диалога живёт в store.ts — дублировать нельзя.
 import type { ChatMessage } from "../store.js";
@@ -14,25 +14,6 @@ export interface BrainAnswer {
   mode: "llm" | "dumb";
 }
 
-// Дефолт таймаута запроса к LLM. env LLM_TIMEOUT_MS (мс) переопределяет его
-// на каждый вызов askLlm — как остальные LLM_* в llmConfig(): локальные модели
-// с reasoning отвечают дольше прода, их лимит живёт в .env.local, не в коде.
-// Мусор/ноль в env — снова дефолт (посетитель прод-сайта не должен ждать минуту).
-const LLM_TIMEOUT_DEFAULT_MS = 15_000;
-
-function llmTimeoutMs(): number {
-  return Number(process.env.LLM_TIMEOUT_MS) || LLM_TIMEOUT_DEFAULT_MS;
-}
-
-// Потолок генерации: без него ответ мог быть простынёй на всю квоту, а история
-// хранит его целиком и тащит в промт каждого следующего запроса — атака
-// «выдай максимум текста» сжигала квоту ускоряясь. env LLM_MAX_TOKENS
-// переопределяет (паттерн llmTimeoutMs: мусор/ноль — снова дефолт).
-const LLM_MAX_TOKENS_DEFAULT = 1_024;
-
-function llmMaxTokens(): number {
-  return Number(process.env.LLM_MAX_TOKENS) || LLM_MAX_TOKENS_DEFAULT;
-}
 const DUMB_SCORE_THRESHOLD = 0.2;
 
 // Решение владельца: в промт идёт последние 10 сообщений диалога.
@@ -43,131 +24,18 @@ const FALLBACK_ANSWER = [
   "Попробуй спросить иначе или напиши владельцу сайта напрямую — контакты на странице «Контакты».",
 ].join("\n");
 
-// ── LLM через OpenAI-совместимый endpoint (Ollama Cloud, llama.cpp, …) ──
-
-interface LlmConfig {
-  baseUrl: string;
-  apiKey: string | undefined;
-  model: string;
-}
-
-function llmConfig(): LlmConfig | null {
-  const baseUrl = process.env.LLM_BASE_URL?.trim().replace(/\/+$/, "");
-  const model = process.env.LLM_MODEL?.trim();
-  if (!baseUrl || !model) return null;
-  return { baseUrl, apiKey: process.env.LLM_API_KEY?.trim() || undefined, model };
-}
-
-async function askLlm(history: ChatMessage[]): Promise<string> {
-  const cfg = llmConfig();
-  if (!cfg) throw new Error("LLM не настроен: нужны LLM_BASE_URL и LLM_MODEL");
-
-  const response = await fetch(`${cfg.baseUrl}/chat/completions`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      ...(cfg.apiKey ? { Authorization: `Bearer ${cfg.apiKey}` } : {}),
-    },
-    body: JSON.stringify({
-      model: cfg.model,
-      messages: [{ role: "system", content: systemPrompt() }, ...history],
-      temperature: 0.3,
-      max_tokens: llmMaxTokens(),
-    }),
-    signal: AbortSignal.timeout(llmTimeoutMs()),
-  });
-
-  if (!response.ok) {
-    throw new Error(`LLM endpoint вернул ${response.status}`);
-  }
-
-  const data = (await response.json()) as {
-    choices?: Array<{ message?: { content?: string } }>;
-  };
-  const text = data.choices?.[0]?.message?.content?.trim();
-  if (!text) throw new Error("LLM вернул пустой ответ");
-  return text;
-}
-
-// ── Health-check LLM для админ-маршрута ─────────────────────────────
+/** Тип инстанса LLM-транспорта — структурная подмена в тестах. */
+export type Llm = ReturnType<typeof createLlm>;
 
 /**
- * Результат health-check LLM для админ-маршрута (?section=health).
+ * Зависимости «мозга» — точки инъекции для тестов; в рантайме createBrain()
+ * без аргументов (llm и log берутся как раньше).
  */
-export interface LlmPing {
-  /** true — провайдер ответил успешно хотя бы на одну из проб. */
-  ok: boolean;
-  /** Задержка в мс от начала пинга до успешной пробы. */
-  latencyMs?: number;
-  /** Какая проба сработала (GET /models или минимальный chat/completions). */
-  detail?: string;
-  /** Причина отказа: не настроен / статус endpoint / текст ошибки сети. Без секретов. */
-  error?: string;
-}
-
-const LLM_PING_TIMEOUT_MS = 10_000;
-
-// Дешёвая проверка доступности: сначала GET /models (не тратит токены), при
-// отказе — минимальный chat/completions (не все провайдеры отдают /models).
-// Никогда не бросает: раздел health должен жить даже при мёртвом провайдере.
-/**
- * Проверка доступности LLM-провайдера для админ-маршрута (?section=health):
- * сначала GET /models, при отказе — минимальный POST /chat/completions.
- * Таймаут каждой пробы — 10 с.
- *
- * Env: LLM_BASE_URL + LLM_MODEL (без них — {ok:false, error:"не настроен"}),
- * LLM_API_KEY (опционален, уходит как Bearer).
- *
- * Никогда не бросает — результат всегда объект LlmPing.
- * @returns {Promise<LlmPing>} ok/latencyMs/detail при успехе, ok:false + error при отказе.
- */
-export async function pingLlm(): Promise<LlmPing> {
-  const cfg = llmConfig();
-  if (!cfg) {
-    return { ok: false, error: "не настроен: нужны LLM_BASE_URL и LLM_MODEL" };
-  }
-  const headers: Record<string, string> = cfg.apiKey
-    ? { Authorization: `Bearer ${cfg.apiKey}` }
-    : {};
-  const startedAt = Date.now();
-
-  try {
-    const response = await fetch(`${cfg.baseUrl}/models`, {
-      headers,
-      signal: AbortSignal.timeout(LLM_PING_TIMEOUT_MS),
-    });
-    if (response.ok) {
-      return { ok: true, latencyMs: Date.now() - startedAt, detail: "GET /models" };
-    }
-  } catch {
-    // /models может не существовать или провайдер лежит — пробуем сам endpoint.
-  }
-
-  try {
-    const response = await fetch(`${cfg.baseUrl}/chat/completions`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", ...headers },
-      // max_tokens: 1 — ping не должен стоить генерации.
-      body: JSON.stringify({
-        model: cfg.model,
-        messages: [{ role: "user", content: "ping" }],
-        max_tokens: 1,
-      }),
-      signal: AbortSignal.timeout(LLM_PING_TIMEOUT_MS),
-    });
-    if (response.ok) {
-      return {
-        ok: true,
-        latencyMs: Date.now() - startedAt,
-        detail: "POST /chat/completions (минимальный запрос)",
-      };
-    }
-    // Только статус, без тела: в ответе провайдера могут быть служебные детали.
-    return { ok: false, error: `endpoint вернул ${response.status}` };
-  } catch (error) {
-    const reason = error instanceof Error ? error.message : String(error);
-    return { ok: false, error: reason };
-  }
+export interface BrainDeps {
+  /** Транспорт LLM; по умолчанию createLlm() (глобальный fetch + process.env). */
+  llm?: Llm;
+  /** Логгер деградаций; по умолчанию общий log из bot/log.ts. */
+  log?: Logger;
 }
 
 // ── Dumb-режим: поиск по справке без нейросети ─────────────────────
@@ -218,32 +86,56 @@ function dumbAnswer(question: string): string {
 // ── Единая точка входа для вебчата и Telegram ──────────────────────
 
 /**
- * Отвечает на вопрос пользователя; единая точка входа для вебчата и Telegram.
- * Спрашивает LLM с system-промтом (lib/prompt.ts) и историей; при любой ошибке
- * (LLM не настроен, таймаут — env LLM_TIMEOUT_MS, дефолт 15 с, не-2xx, пустой
- * ответ) падает в dumb-режим —
- * поиск по справке без сети. Никогда не бросает.
- *
- * Env: LLM_BASE_URL + LLM_MODEL (для llm-режима; без них — сразу dumb),
- * LLM_API_KEY (опциональный Bearer).
- *
- * @param {string} question - Текущий вопрос пользователя.
- * @param {ChatMessage[]} [history=[]] - Предыдущие сообщения диалога (уже
- *   достанные из store); в промт идут последние 10.
- * @returns {Promise<BrainAnswer>} Текст ответа и mode: 'llm' | 'dumb'.
+ * Фабрика «мозга»: answer живёт в замыкании, llm/log — инъекции. Дефолтный
+ * `answer = createBrain().answer` сохраняет все существующие `import { answer }`
+ * без правок, а тесты подставляют фейковый llm вместо сети.
+ * @param {BrainDeps} deps - Инъекции llm/log; без аргументов — поведение как раньше.
+ * @returns Обработчик answer(question, history).
  */
-export async function answer(question: string, history: ChatMessage[] = []): Promise<BrainAnswer> {
-  // question — текущий вопрос пользователя, history — предыдущие сообщения
-  // диалога (уже достанные из store; оба канала передают её, см. вебчат и
-  // bot/http/telegram-webhook.ts).
+export function createBrain(deps: BrainDeps = {}) {
+  // Дефолты — ленивые инстансы рантайма; тесты приходят со своими через deps.
+  const llm = deps.llm ?? createLlm();
+  const log = deps.log ?? rootLog;
 
-  const recent = history.slice(-HISTORY_WINDOW).map(({ role, content }) => ({ role, content }));
-  try {
-    return { text: await askLlm([...recent, { role: "user", content: question }]), mode: "llm" };
-  } catch (error) {
-    const reason = error instanceof Error ? error.message : String(error);
-    log.error("brain", `LLM недоступен (${reason}), отвечаю в dumb-режиме`);
-    // Dumb-режим работает по одному вопросу — историю игнорирует сознательно.
-    return { text: dumbAnswer(question), mode: "dumb" };
+  /**
+   * Отвечает на вопрос пользователя; единая точка входа для вебчата и Telegram.
+   * Спрашивает LLM (bot/llm.ts) с system-промтом (prompt.ts) и историей; при
+   * любой ошибке транспорта (LLM не настроен, таймаут, не-2xx, пустой ответ)
+   * падает в dumb-режим — поиск по справке без сети. Никогда не бросает.
+   *
+   * Env (читает транспорт): LLM_BASE_URL + LLM_MODEL (для llm-режима; без них —
+   * сразу dumb), LLM_API_KEY (опциональный Bearer), LLM_TIMEOUT_MS/LLM_MAX_TOKENS.
+   *
+   * @param {string} question - Текущий вопрос пользователя.
+   * @param {ChatMessage[]} [history=[]] - Предыдущие сообщения диалога (уже
+   *   достанные из store); в промт идут последние 10.
+   * @returns {Promise<BrainAnswer>} Текст ответа и mode: 'llm' | 'dumb'.
+   */
+  async function answer(question: string, history: ChatMessage[] = []): Promise<BrainAnswer> {
+    // question — текущий вопрос пользователя, history — предыдущие сообщения
+    // диалога (уже достанные из store; оба канала передают её, см. вебчат и
+    // bot/http/telegram-webhook.ts).
+
+    const recent = history.slice(-HISTORY_WINDOW).map(({ role, content }) => ({ role, content }));
+    try {
+      // System-промт ставит brain: транспорт не знает про prompt.ts.
+      return {
+        text: await llm.chat([
+          { role: "system", content: systemPrompt() },
+          ...recent,
+          { role: "user", content: question },
+        ]),
+        mode: "llm",
+      };
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      log.error("brain", `LLM недоступен (${reason}), отвечаю в dumb-режиме`);
+      // Dumb-режим работает по одному вопросу — историю игнорирует сознательно.
+      return { text: dumbAnswer(question), mode: "dumb" };
+    }
   }
+
+  return { answer };
 }
+
+export const answer = createBrain().answer;

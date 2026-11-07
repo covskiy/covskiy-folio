@@ -1,9 +1,13 @@
 import process from "node:process";
+import { createLlm } from "../llm.js";
 import { log } from "../log.js";
-import { pingLlm } from "../brain/brain.js";
 import { systemPrompt } from "../brain/prompt.js";
 import { ping as pingRedis } from "../store.js";
 import { getWebhookInfo, setWebhook, type TgWebhookInfo } from "../telegram-api.js";
+
+// Дефолтный инстанс транспорта: env резолвится внутри на каждый вызов,
+// так что подмена env в тестах и Redeploy с новыми LLM_* работают как раньше.
+const llm = createLlm();
 
 // Админ-маршрут: регистрация и диагностика Telegram-вебхука, health бота,
 // просмотр собранного промта (шаг 7 плана). Защищён тем же секретом, что и
@@ -24,8 +28,12 @@ async function telegramHealth(): Promise<TelegramHealth> {
 // Пункты health независимы: считаем параллельно, ошибка одного (уже пойманная
 // внутри ping-функций) не влияет на остальные.
 async function healthResponse(): Promise<Response> {
-  const [llm, redis, telegram] = await Promise.all([pingLlm(), pingRedis(), telegramHealth()]);
-  return Response.json({ ok: true, llm, redis, telegram });
+  const [llmHealth, redis, telegram] = await Promise.all([
+    llm.ping(),
+    pingRedis(),
+    telegramHealth(),
+  ]);
+  return Response.json({ ok: true, llm: llmHealth, redis, telegram });
 }
 
 /**
