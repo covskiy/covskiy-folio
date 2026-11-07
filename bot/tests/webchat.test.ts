@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { handleWebChat } from "../http/webchat";
+import { createWebChatHandler } from "../http/webchat";
 import { knowledgeEntries } from "../brain/prompt";
+import type { ChatMessage } from "../store";
 
 const URL = "http://localhost/api/chat";
 const SESSION_ID = "3f2a9c8e-1b4d-4e6f-9a7b-2c5d8e0f1a2b";
@@ -13,75 +14,75 @@ function post(body: unknown, headers: Record<string, string> = {}): Request {
   });
 }
 
+interface HarnessOptions {
+  /** Ответ fakeBrain. */
+  llmText?: string;
+  /** Порог фейкового лимитера на один бакет (по умолчанию — без лимита). */
+  rateLimitMax?: number;
+  /** Режим мёртвого Redis: store-фейк ведёт себя fail-open ([] / no-op) — как реальный store при недоступном Redis. */
+  deadStore?: boolean;
+}
+
+interface Harness {
+  handle: (request: Request) => Promise<Response>;
+  history: Map<string, ChatMessage[]>;
+  store: {
+    getHistory: ReturnType<typeof vi.fn>;
+    appendHistory: ReturnType<typeof vi.fn>;
+  };
+  brain: { answer: ReturnType<typeof vi.fn> };
+  limit: ReturnType<typeof vi.fn>;
+}
+
 /**
- * Подменяет глобальный fetch: вызовы в Upstash REST обслуживаются локальной
- * Map-«Redis» (get/set + pipeline incr/expire для лимитера), вызовы в LLM —
- * фиксированным ответом.
+ * Собирает обработчик на явных фейках: store — Map-бэкед история, brain —
+ * управляемый ответ, limit — счётчик на бакет. Сеть не подменяется — её нет
+ * ни в одном пути обработчика.
  */
-function stubRedisAndLlm(llmText: string): {
-  fetchMock: ReturnType<typeof vi.fn>;
-  store: Map<string, string>;
-} {
-  vi.stubEnv("UPSTASH_REDIS_REST_URL", "http://upstash.test");
-  vi.stubEnv("UPSTASH_REDIS_REST_TOKEN", "test-token");
-  vi.stubEnv("LLM_BASE_URL", "http://127.0.0.1:9999/v1");
-  vi.stubEnv("LLM_MODEL", "test-model");
-  const store = new Map<string, string>();
+function makeHarness(options: HarnessOptions = {}): Harness {
+  const history = new Map<string, ChatMessage[]>();
+  const dead = options.deadStore === true;
+
+  const store = {
+    getHistory: vi.fn(async (key: string): Promise<ChatMessage[]> =>
+      dead ? [] : (history.get(key) ?? []),
+    ),
+    appendHistory: vi.fn(async (key: string, messages: ChatMessage[]): Promise<void> => {
+      if (!dead) history.set(key, [...(history.get(key) ?? []), ...messages]);
+    }),
+  };
+
+  const brain = {
+    answer: vi.fn(
+      async (
+        _question: string,
+        _history: ChatMessage[] = [],
+      ): Promise<{ text: string; mode: "llm" }> => ({
+        text: options.llmText ?? "Ответ",
+        mode: "llm",
+      }),
+    ),
+  };
+
   const counters = new Map<string, number>();
-  const fetchMock = vi.fn(async (input: unknown, init?: RequestInit) => {
-    const url = String(input);
-    if (url === "http://upstash.test") {
-      const body = JSON.parse(String(init?.body)) as unknown;
-      // Pipeline лимитера — массив команд, одиночная команда — плоский массив.
-      if (Array.isArray(body) && Array.isArray(body[0])) {
-        const results = (body as string[][]).map((command) => {
-          if (command[0] === "incr") {
-            const next = (counters.get(command[1]) ?? 0) + 1;
-            counters.set(command[1], next);
-            return { result: next };
-          }
-          if (command[0] === "expire") return { result: 1 };
-          throw new Error(`неожиданная команда pipeline: ${command[0]}`);
-        });
-        return new Response(JSON.stringify(results));
-      }
-      const command = body as string[];
-      if (command[0] === "get") {
-        return new Response(JSON.stringify({ result: store.get(command[1]) ?? null }));
-      }
-      if (command[0] === "set") {
-        store.set(command[1], String(command[2]));
-        return new Response(JSON.stringify({ result: "OK" }));
-      }
-      throw new Error(`неожиданная команда Redis: ${command[0]}`);
-    }
-    return new Response(JSON.stringify({ choices: [{ message: { content: llmText } }] }));
+  const limit = vi.fn(async (bucket: string): Promise<boolean> => {
+    const next = (counters.get(bucket) ?? 0) + 1;
+    counters.set(bucket, next);
+    return next <= (options.rateLimitMax ?? Number.POSITIVE_INFINITY);
   });
-  vi.stubGlobal("fetch", fetchMock);
-  return { fetchMock, store };
-}
 
-interface LlmRequestBody {
-  messages: Array<{ role: string; content: string }>;
-}
-
-// Последний вызов fetch — это запись истории в Redis (appendHistory идёт после
-// brain.answer), поэтому вызовы LLM отбираем по URL, а не по порядку.
-function lastLlmBody(fetchMock: ReturnType<typeof vi.fn>): LlmRequestBody {
-  const llmCall = fetchMock.mock.calls.findLast(
-    ([input]) => String(input) === "http://127.0.0.1:9999/v1/chat/completions",
-  ) as [unknown, RequestInit];
-  return JSON.parse(String(llmCall[1]?.body)) as LlmRequestBody;
+  const handle = createWebChatHandler({ store, brain, limit });
+  return { handle, history, store, brain, limit };
 }
 
 afterEach(() => {
   vi.unstubAllEnvs();
-  vi.unstubAllGlobals();
 });
 
 describe("handleWebChat: GET", () => {
   it("возвращает service и первые 3 чипса из справки", async () => {
-    const res = await handleWebChat(new Request(URL));
+    const { handle } = makeHarness();
+    const res = await handle(new Request(URL));
     expect(res.status).toBe(200);
     await expect(res.json()).resolves.toMatchObject({
       ok: true,
@@ -95,34 +96,36 @@ describe("handleWebChat: GET", () => {
 
 describe("handleWebChat: POST", () => {
   it("чужой HTTP-метод → 405", async () => {
-    const res = await handleWebChat(new Request(URL, { method: "PUT" }));
+    const { handle } = makeHarness();
+    const res = await handle(new Request(URL, { method: "PUT" }));
     expect(res.status).toBe(405);
   });
 
   it("битый JSON → 400", async () => {
-    const res = await handleWebChat(post("{oops"));
+    const { handle } = makeHarness();
+    const res = await handle(post("{oops"));
     expect(res.status).toBe(400);
   });
 
   it("sessionId не проходит паттерн (короткий / чужие символы) → 400", async () => {
-    stubRedisAndLlm("ок");
+    const { handle } = makeHarness();
     for (const bad of ["abc", "с пробелом!!", "", 42, null]) {
-      const res = await handleWebChat(post({ sessionId: bad, text: "вопрос" }));
+      const res = await handle(post({ sessionId: bad, text: "вопрос" }));
       expect(res.status).toBe(400);
     }
   });
 
   it("пустой или слишком длинный text → 400", async () => {
-    stubRedisAndLlm("ок");
+    const { handle } = makeHarness();
     for (const bad of ["", "   \n", "x".repeat(2001), 42]) {
-      const res = await handleWebChat(post({ sessionId: SESSION_ID, text: bad }));
+      const res = await handle(post({ sessionId: SESSION_ID, text: bad }));
       expect(res.status).toBe(400);
     }
   });
 
   it("валидный вопрос → {ok, text, mode} от brain", async () => {
-    stubRedisAndLlm("Ответ ассистента");
-    const res = await handleWebChat(post({ sessionId: SESSION_ID, text: "  вопрос  " }));
+    const { handle } = makeHarness({ llmText: "Ответ ассистента" });
+    const res = await handle(post({ sessionId: SESSION_ID, text: "  вопрос  " }));
     expect(res.status).toBe(200);
     await expect(res.json()).resolves.toMatchObject({
       ok: true,
@@ -131,117 +134,100 @@ describe("handleWebChat: POST", () => {
     });
   });
 
-  it("вопрос уходит в LLM без истории и пара вопрос/ответ сохраняется в Redis", async () => {
-    const { fetchMock, store } = stubRedisAndLlm("Ответ");
-    await handleWebChat(post({ sessionId: SESSION_ID, text: "первый вопрос" }));
+  it("вопрос уходит в brain без истории и пара вопрос/ответ сохраняется в store", async () => {
+    const { handle, history, brain, store } = makeHarness({ llmText: "Ответ" });
+    await handle(post({ sessionId: SESSION_ID, text: "первый вопрос" }));
 
-    const body = lastLlmBody(fetchMock);
-    expect(body.messages[0].role).toBe("system");
-    expect(body.messages.at(-1)).toMatchObject({ role: "user", content: "первый вопрос" });
+    expect(brain.answer).toHaveBeenCalledWith("первый вопрос", []);
 
-    const saved = JSON.parse(store.get(`chat:web:${SESSION_ID}`) ?? "[]") as Array<{
-      role: string;
-      content: string;
-    }>;
-    expect(saved).toEqual([
+    expect(store.appendHistory).toHaveBeenCalledWith(`chat:web:${SESSION_ID}`, [
+      { role: "user", content: "первый вопрос" },
+      { role: "assistant", content: "Ответ" },
+    ]);
+    expect(history.get(`chat:web:${SESSION_ID}`)).toEqual([
       { role: "user", content: "первый вопрос" },
       { role: "assistant", content: "Ответ" },
     ]);
   });
 
-  it("второй вопрос того же sessionId уходит в LLM вместе с историей", async () => {
-    const { fetchMock, store } = stubRedisAndLlm("Ответ");
-    await handleWebChat(post({ sessionId: SESSION_ID, text: "первый вопрос" }));
-    await handleWebChat(post({ sessionId: SESSION_ID, text: "второй вопрос" }));
+  it("второй вопрос того же sessionId уходит в brain вместе с историей", async () => {
+    const { handle, history, brain } = makeHarness({ llmText: "Ответ" });
+    await handle(post({ sessionId: SESSION_ID, text: "первый вопрос" }));
+    await handle(post({ sessionId: SESSION_ID, text: "второй вопрос" }));
 
-    const body = lastLlmBody(fetchMock);
-    expect(body.messages).toEqual([
-      expect.objectContaining({ role: "system" }),
+    // Второй вызов brain получил сохранённую пару как историю
+    expect(brain.answer).toHaveBeenLastCalledWith("второй вопрос", [
       { role: "user", content: "первый вопрос" },
       { role: "assistant", content: "Ответ" },
-      { role: "user", content: "второй вопрос" },
     ]);
-    expect(store.get(`chat:web:${SESSION_ID}`)).toBeDefined();
+    expect(history.get(`chat:web:${SESSION_ID}`)).toBeDefined();
   });
 
   it("text ровно 2000 символов (граница лимита) проходит", async () => {
-    stubRedisAndLlm("Ответ");
-    const res = await handleWebChat(post({ sessionId: SESSION_ID, text: "x".repeat(2_000) }));
+    const { handle } = makeHarness();
+    const res = await handle(post({ sessionId: SESSION_ID, text: "x".repeat(2_000) }));
     expect(res.status).toBe(200);
   });
 });
 
 describe("handleWebChat: стены против злоупотреблений (Origin, rate-limit)", () => {
-  it("чужой Origin → 403, без походов в Redis и LLM", async () => {
-    const { fetchMock } = stubRedisAndLlm("Ответ");
-    const res = await handleWebChat(
+  it("чужой Origin → 403, без походов в store, brain и лимитер", async () => {
+    const { handle, store, brain, limit } = makeHarness();
+    const res = await handle(
       post({ sessionId: SESSION_ID, text: "вопрос" }, { Origin: "https://evil.example" }),
     );
     expect(res.status).toBe(403);
-    expect(fetchMock).not.toHaveBeenCalled();
+    expect(limit).not.toHaveBeenCalled();
+    expect(store.getHistory).not.toHaveBeenCalled();
+    expect(brain.answer).not.toHaveBeenCalled();
   });
 
   it("свой Origin (совпал с origin запроса) → 200", async () => {
-    stubRedisAndLlm("Ответ");
-    const res = await handleWebChat(
+    const { handle } = makeHarness();
+    const res = await handle(
       post({ sessionId: SESSION_ID, text: "вопрос" }, { Origin: "http://localhost" }),
     );
     expect(res.status).toBe(200);
   });
 
   it("без Origin (curl, скрипт) пропускается — скриптовый шторм ловит rate-limit", async () => {
-    stubRedisAndLlm("Ответ");
-    const res = await handleWebChat(post({ sessionId: SESSION_ID, text: "вопрос" }));
+    const { handle } = makeHarness();
+    const res = await handle(post({ sessionId: SESSION_ID, text: "вопрос" }));
     expect(res.status).toBe(200);
   });
 
-  it("превышен RATE_LIMIT_MAX → 429, LLM вызван только на первый вопрос", async () => {
-    vi.stubEnv("RATE_LIMIT_MAX", "1");
-    const { fetchMock } = stubRedisAndLlm("Ответ");
-    const first = await handleWebChat(post({ sessionId: SESSION_ID, text: "первый" }));
+  it("превышен лимит (fakeLimit → false) → 429, brain вызван только на первый вопрос", async () => {
+    const { handle, brain } = makeHarness({ rateLimitMax: 1 });
+    const first = await handle(post({ sessionId: SESSION_ID, text: "первый" }));
     expect(first.status).toBe(200);
-    const second = await handleWebChat(post({ sessionId: SESSION_ID, text: "второй" }));
+    const second = await handle(post({ sessionId: SESSION_ID, text: "второй" }));
     expect(second.status).toBe(429);
-    const llmCalls = fetchMock.mock.calls.filter(([url]) =>
-      String(url).includes("chat/completions"),
-    );
-    expect(llmCalls).toHaveLength(1);
+    expect(brain.answer).toHaveBeenCalledTimes(1);
   });
 
-  it("мусор в RATE_LIMIT_MAX → дефолт 15: 15-й запрос ещё проходит", async () => {
-    vi.stubEnv("RATE_LIMIT_MAX", "мусор");
-    stubRedisAndLlm("Ответ");
-    for (let i = 0; i < 15; i++) {
-      const res = await handleWebChat(post({ sessionId: SESSION_ID, text: `вопрос ${i}` }));
-      expect(res.status).toBe(200);
-    }
+  it("бакет лимита — web:{ip}: запросы с разных IP не делят одно окно", async () => {
+    const { handle, limit } = makeHarness({ rateLimitMax: 1 });
+    const first = await handle(
+      post({ sessionId: SESSION_ID, text: "первый" }, { "x-real-ip": "203.0.113.1" }),
+    );
+    const second = await handle(
+      post({ sessionId: SESSION_ID, text: "второй" }, { "x-real-ip": "203.0.113.2" }),
+    );
+    expect(first.status).toBe(200);
+    expect(second.status).toBe(200);
+    expect(limit.mock.calls).toEqual([["web:203.0.113.1"], ["web:203.0.113.2"]]);
   });
 });
 
-describe("handleWebChat: fail-open (Upstash задан, но REST всегда падает)", () => {
-  it("REST падает исключением — вебчат всё равно отвечает ответом LLM, 200 ok", async () => {
-    vi.stubEnv("UPSTASH_REDIS_REST_URL", "http://upstash.test");
-    vi.stubEnv("UPSTASH_REDIS_REST_TOKEN", "test-token");
-    vi.stubEnv("LLM_BASE_URL", "http://127.0.0.1:9999/v1");
-    vi.stubEnv("LLM_MODEL", "test-model");
-    const fetchMock = vi.fn(async (input: unknown) => {
-      if (String(input) === "http://upstash.test") {
-        throw new Error("ECONNREFUSED");
-      }
-      return new Response(JSON.stringify({ choices: [{ message: { content: "Ответ" } }] }), {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
-      });
-    });
-    vi.stubGlobal("fetch", fetchMock);
+describe("handleWebChat: fail-open (store в режиме мёртвого Redis)", () => {
+  it("store не отвечает (пусто/no-op) — вебчат всё равно отвечает ответом brain, 200 ok", async () => {
+    const { handle, brain } = makeHarness({ deadStore: true, llmText: "Ответ" });
 
-    const res = await handleWebChat(post({ sessionId: SESSION_ID, text: "вопрос" }));
+    const res = await handle(post({ sessionId: SESSION_ID, text: "вопрос" }));
 
     expect(res.status).toBe(200);
     await expect(res.json()).resolves.toMatchObject({ ok: true, text: "Ответ", mode: "llm" });
-    // LLM вызван, несмотря на три упавших обращения к Redis (pipeline лимитера + get + set)
-    expect(fetchMock.mock.calls.some(([url]) => String(url).includes("chat/completions"))).toBe(
-      true,
-    );
+    // brain вызван, несмотря на пустые историю и запись
+    expect(brain.answer).toHaveBeenCalledTimes(1);
   });
 });

@@ -180,3 +180,6 @@ export function createLlm(deps: LlmDeps = {}) {
 
   return { chat, ping };
 }
+
+/** Тип инстанса LLM-транспорта — для фабрик, принимающих llm как зависимость. */
+export type Llm = ReturnType<typeof createLlm>;

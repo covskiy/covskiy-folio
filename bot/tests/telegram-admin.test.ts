@@ -1,72 +1,132 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { handleTelegramAdmin } from "../http/telegram-admin";
+import { createTelegramAdminHandler } from "../http/telegram-admin";
+import { createConfig } from "../config";
+import { createLlm, type LlmPing } from "../llm";
+import { createStore, type RedisPing, type Store } from "../store";
+import { createTelegramApi, type TelegramApi, type TgWebhookInfo } from "../telegram-api";
 import { systemPrompt } from "../brain/prompt";
+import type { Logger } from "../log";
 
 const SECRET = "test-secret";
 const SETUP_URL = "http://localhost/api/telegram-setup";
 const HEALTH_URL = `${SETUP_URL}?section=health`;
 const PROMPT_URL = `${SETUP_URL}?section=prompt`;
 
-/** Подменяет глобальный fetch: Bot API всегда отвечает успехом. */
-function stubFetch(): ReturnType<typeof vi.fn> {
-  vi.stubEnv("TELEGRAM_BOT_TOKEN", "test-token");
-  const fetchMock = vi.fn(
-    async () =>
-      new Response(JSON.stringify({ ok: true, result: true }), {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
-      }),
+/** Ответ Bot API на getWebhookInfo (фикстура для пункта telegram в health). */
+const WEBHOOK_RESULT: TgWebhookInfo = {
+  url: "https://site.example/api/telegram",
+  pending_update_count: 2,
+};
+
+/** Молчаливый логгер: обработчик логирует, тесты — нет. */
+const silentLog: Logger = {
+  debug: vi.fn(),
+  info: vi.fn(),
+  warn: vi.fn(),
+  error: vi.fn(),
+  warnThrottled: vi.fn(),
+};
+
+interface HarnessOptions {
+  /** Env секрета для config (не задан — TELEGRAM_WEBHOOK_SECRET отсутствует). */
+  secret?: string;
+  webhook?: TgWebhookInfo;
+  /** Если задан: tg-фейк бросает ошибку с этим текстом (502). */
+  tgError?: string;
+  llmPing?: LlmPing;
+  redisPing?: RedisPing;
+}
+
+interface Harness {
+  handle: (request: Request) => Promise<Response>;
+  tg: {
+    getWebhookInfo: ReturnType<typeof vi.fn>;
+    setWebhook: ReturnType<typeof vi.fn>;
+  };
+  llm: { ping: ReturnType<typeof vi.fn> };
+  store: { ping: ReturnType<typeof vi.fn> };
+}
+
+/**
+ * Собирает обработчик на фейках: config — createConfig({...}) (секрет через env
+ * фабрики, не vi.stubEnv), llm/store/tg — управляемые фейки с записью вызовов.
+ */
+function makeHarness(options: HarnessOptions = {}): Harness {
+  const config = createConfig(
+    options.secret === undefined ? {} : { TELEGRAM_WEBHOOK_SECRET: options.secret },
   );
-  vi.stubGlobal("fetch", fetchMock);
-  return fetchMock;
+  const llm = {
+    ping: vi.fn(
+      async (): Promise<LlmPing> =>
+        options.llmPing ?? { ok: false, error: "не настроен: нужны LLM_BASE_URL и LLM_MODEL" },
+    ),
+  };
+  const store = {
+    ping: vi.fn(
+      async (): Promise<RedisPing> =>
+        options.redisPing ?? {
+          ok: false,
+          reason: "не настроен: UPSTASH_REDIS_REST_* / KV_REST_API_* отсутствуют",
+        },
+    ),
+  };
+  const tg = {
+    getWebhookInfo: vi.fn(async (): Promise<TgWebhookInfo> => {
+      if (options.tgError) throw new Error(options.tgError);
+      return options.webhook ?? WEBHOOK_RESULT;
+    }),
+    setWebhook: vi.fn(async (): Promise<boolean> => {
+      if (options.tgError) throw new Error(options.tgError);
+      return true;
+    }),
+  };
+  const handle = createTelegramAdminHandler({ config, llm, tg, store, log: silentLog });
+  return { handle, tg, llm, store };
 }
 
 afterEach(() => {
-  vi.unstubAllEnvs();
-  vi.unstubAllGlobals();
+  vi.clearAllMocks();
 });
 
 describe("handleTelegramAdmin", () => {
   it("без секрет-заголовка → 404 (маршрут скрыт)", async () => {
-    vi.stubEnv("TELEGRAM_WEBHOOK_SECRET", SECRET);
-    const res = await handleTelegramAdmin(new Request(SETUP_URL));
+    const { handle } = makeHarness({ secret: SECRET });
+    const res = await handle(new Request(SETUP_URL));
     expect(res.status).toBe(404);
   });
 
   it("без секрета в env → 404 даже с заголовком", async () => {
-    const res = await handleTelegramAdmin(
+    const { handle } = makeHarness();
+    const res = await handle(
       new Request(SETUP_URL, { headers: { "x-telegram-bot-api-secret-token": SECRET } }),
     );
     expect(res.status).toBe(404);
   });
 
   it("чужой секрет → 404", async () => {
-    vi.stubEnv("TELEGRAM_WEBHOOK_SECRET", "другой-секрет");
-    const res = await handleTelegramAdmin(
+    const { handle } = makeHarness({ secret: "другой-секрет" });
+    const res = await handle(
       new Request(SETUP_URL, { headers: { "x-telegram-bot-api-secret-token": SECRET } }),
     );
     expect(res.status).toBe(404);
   });
 
   it("GET → getWebhookInfo", async () => {
-    vi.stubEnv("TELEGRAM_WEBHOOK_SECRET", SECRET);
-    const fetchMock = stubFetch();
+    const { handle, tg } = makeHarness({ secret: SECRET });
 
-    const res = await handleTelegramAdmin(
+    const res = await handle(
       new Request(SETUP_URL, { headers: { "x-telegram-bot-api-secret-token": SECRET } }),
     );
 
     expect(res.status).toBe(200);
-    const [url] = fetchMock.mock.calls[0] as [string];
-    expect(url).toContain("/getWebhookInfo");
-    await expect(res.json()).resolves.toMatchObject({ ok: true });
+    expect(tg.getWebhookInfo).toHaveBeenCalledTimes(1);
+    await expect(res.json()).resolves.toMatchObject({ ok: true, webhook: WEBHOOK_RESULT });
   });
 
   it("POST → setWebhook с url из origin, секретом и allowed_updates", async () => {
-    vi.stubEnv("TELEGRAM_WEBHOOK_SECRET", SECRET);
-    const fetchMock = stubFetch();
+    const { handle, tg } = makeHarness({ secret: SECRET });
 
-    const res = await handleTelegramAdmin(
+    const res = await handle(
       new Request(SETUP_URL, {
         method: "POST",
         headers: { "x-telegram-bot-api-secret-token": SECRET },
@@ -74,9 +134,8 @@ describe("handleTelegramAdmin", () => {
     );
 
     expect(res.status).toBe(200);
-    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
-    expect(url).toContain("/setWebhook");
-    expect(JSON.parse(String(init.body))).toMatchObject({
+    expect(tg.setWebhook).toHaveBeenCalledTimes(1);
+    expect(tg.setWebhook).toHaveBeenCalledWith({
       url: "http://localhost/api/telegram",
       secret_token: SECRET,
       allowed_updates: ["message", "callback_query"],
@@ -84,46 +143,27 @@ describe("handleTelegramAdmin", () => {
   });
 
   it("ошибка Telegram API → 502 с текстом", async () => {
-    vi.stubEnv("TELEGRAM_WEBHOOK_SECRET", SECRET);
-    vi.stubEnv("TELEGRAM_BOT_TOKEN", "test-token");
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(
-        async () =>
-          new Response(JSON.stringify({ ok: false, description: "Unauthorized" }), {
-            status: 200,
-            headers: { "Content-Type": "application/json" },
-          }),
-      ),
-    );
+    const { handle } = makeHarness({
+      secret: SECRET,
+      tgError: "Telegram setWebhook failed: Unauthorized",
+    });
 
-    const res = await handleTelegramAdmin(
-      new Request(SETUP_URL, { headers: { "x-telegram-bot-api-secret-token": SECRET } }),
+    const res = await handle(
+      new Request(SETUP_URL, {
+        method: "POST",
+        headers: { "x-telegram-bot-api-secret-token": SECRET },
+      }),
     );
 
     expect(res.status).toBe(502);
-    await expect(res.json()).resolves.toMatchObject({ ok: false });
+    await expect(res.json()).resolves.toMatchObject({
+      ok: false,
+      error: "Telegram setWebhook failed: Unauthorized",
+    });
   });
 });
 
 // ── Разделы health и prompt ─────────────────────────────────────────
-
-/** Ответ Bot API на getWebhookInfo для маршрутизации fetch по URL. */
-const WEBHOOK_RESULT = { url: "https://site.example/api/telegram", pending_update_count: 2 };
-
-function jsonResponse(body: unknown): Response {
-  return new Response(JSON.stringify(body), {
-    status: 200,
-    headers: { "Content-Type": "application/json" },
-  });
-}
-
-/** Подменяет fetch так, чтобы каждый внешний сервис вёл себя по-своему. */
-function stubFetchByUrl(route: (url: string) => Promise<Response>): ReturnType<typeof vi.fn> {
-  const fetchMock = vi.fn(async (input: string | URL | Request) => route(String(input)));
-  vi.stubGlobal("fetch", fetchMock);
-  return fetchMock;
-}
 
 function adminRequest(url: string, method = "GET"): Request {
   return new Request(url, { method, headers: { "x-telegram-bot-api-secret-token": SECRET } });
@@ -131,28 +171,28 @@ function adminRequest(url: string, method = "GET"): Request {
 
 describe("handleTelegramAdmin: разделы health и prompt", () => {
   it("health без секрет-заголовка → 404", async () => {
-    vi.stubEnv("TELEGRAM_WEBHOOK_SECRET", SECRET);
-    const res = await handleTelegramAdmin(new Request(HEALTH_URL));
+    const { handle } = makeHarness({ secret: SECRET });
+    const res = await handle(new Request(HEALTH_URL));
     expect(res.status).toBe(404);
   });
 
   it("prompt без секрет-заголовка → 404", async () => {
-    vi.stubEnv("TELEGRAM_WEBHOOK_SECRET", SECRET);
-    const res = await handleTelegramAdmin(new Request(PROMPT_URL));
+    const { handle } = makeHarness({ secret: SECRET });
+    const res = await handle(new Request(PROMPT_URL));
     expect(res.status).toBe(404);
   });
 
   it("не-GET на разделы → 405", async () => {
-    vi.stubEnv("TELEGRAM_WEBHOOK_SECRET", SECRET);
+    const { handle } = makeHarness({ secret: SECRET });
     for (const method of ["DELETE", "PUT"]) {
-      const res = await handleTelegramAdmin(adminRequest(HEALTH_URL, method));
+      const res = await handle(adminRequest(HEALTH_URL, method));
       expect(res.status).toBe(405);
     }
   });
 
   it("prompt → собранный systemPrompt целиком", async () => {
-    vi.stubEnv("TELEGRAM_WEBHOOK_SECRET", SECRET);
-    const res = await handleTelegramAdmin(adminRequest(PROMPT_URL));
+    const { handle } = makeHarness({ secret: SECRET });
+    const res = await handle(adminRequest(PROMPT_URL));
     expect(res.status).toBe(200);
     const body = (await res.json()) as { ok: boolean; prompt: string };
     expect(body.ok).toBe(true);
@@ -160,31 +200,36 @@ describe("handleTelegramAdmin: разделы health и prompt", () => {
   });
 
   it("health: ошибка одного пункта не роняет остальные", async () => {
-    vi.stubEnv("TELEGRAM_WEBHOOK_SECRET", SECRET);
-    vi.stubEnv("TELEGRAM_BOT_TOKEN", "test-token");
-    vi.stubEnv("LLM_BASE_URL", "https://llm.test/v1");
-    vi.stubEnv("LLM_MODEL", "test-model");
-    vi.stubEnv("UPSTASH_REDIS_REST_URL", "https://redis.test");
-    vi.stubEnv("UPSTASH_REDIS_REST_TOKEN", "redis-token");
-    stubFetchByUrl(async (url) => {
-      if (url.includes("api.telegram.org")) {
-        return jsonResponse({ ok: true, result: WEBHOOK_RESULT });
-      }
-      if (url.includes("redis.test")) {
-        return jsonResponse({ result: "PONG" });
-      }
-      // LLM-провайдер лежит целиком (сеть).
-      throw new Error("ECONNREFUSED");
+    // llm — реальный транспорт: оба его пробы упадут в сеть (fetchImpl-фейк),
+    // ping должен вернуть {ok:false, error} с текстом сетевой ошибки.
+    const llm = createLlm({
+      config: createConfig({ LLM_BASE_URL: "https://llm.test/v1", LLM_MODEL: "test-model" }),
+      fetchImpl: async () => {
+        throw new Error("ECONNREFUSED");
+      },
+    });
+    const tg = {
+      getWebhookInfo: vi.fn(async (): Promise<TgWebhookInfo> => WEBHOOK_RESULT),
+      setWebhook: vi.fn(async (): Promise<boolean> => true),
+    };
+    const store = { ping: vi.fn(async (): Promise<RedisPing> => ({ ok: true, latencyMs: 7 })) };
+
+    const handle = createTelegramAdminHandler({
+      config: createConfig({ TELEGRAM_WEBHOOK_SECRET: SECRET }),
+      llm,
+      tg,
+      store,
+      log: silentLog,
     });
 
-    const res = await handleTelegramAdmin(adminRequest(HEALTH_URL));
+    const res = await handle(adminRequest(HEALTH_URL));
 
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
       ok: boolean;
       llm: { ok: boolean; error?: string };
       redis: { ok: boolean; latencyMs?: number };
-      telegram: { ok: boolean; webhook?: typeof WEBHOOK_RESULT };
+      telegram: { ok: boolean; webhook?: TgWebhookInfo };
     };
     expect(body.llm.ok).toBe(false);
     expect(body.llm.error).toContain("ECONNREFUSED");
@@ -194,15 +239,28 @@ describe("handleTelegramAdmin: разделы health и prompt", () => {
     expect(body.telegram.webhook).toEqual(WEBHOOK_RESULT);
   });
 
-  it("health без настроенных env: все пункты ok:false с причиной, без throw", async () => {
-    vi.stubEnv("TELEGRAM_WEBHOOK_SECRET", SECRET);
-    // fetch не должен вызываться вовсе — подменяем на падение как страховку
-    // от случайного похода в сеть из теста.
-    stubFetchByUrl(async () => {
+  it("health без настроенного env: все пункты ok:false с причиной, без throw", async () => {
+    // Все три пункта — реальные фабрики над ПУСТЫМ config: ни один не должен
+    // дойти до сети, guard-фейк fetch падает при случайном походе.
+    const guard = vi.fn(async () => {
       throw new Error("unexpected network call");
     });
+    const emptyConfig = createConfig({});
+    const llm = createLlm({ config: emptyConfig, fetchImpl: guard as unknown as typeof fetch });
+    const store: Pick<Store, "ping"> = createStore({ config: emptyConfig });
+    const tg: Pick<TelegramApi, "getWebhookInfo" | "setWebhook"> = createTelegramApi({
+      config: emptyConfig,
+    });
 
-    const res = await handleTelegramAdmin(adminRequest(HEALTH_URL));
+    const handle = createTelegramAdminHandler({
+      config: createConfig({ TELEGRAM_WEBHOOK_SECRET: SECRET }),
+      llm,
+      tg,
+      store,
+      log: silentLog,
+    });
+
+    const res = await handle(adminRequest(HEALTH_URL));
 
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
@@ -215,5 +273,8 @@ describe("handleTelegramAdmin: разделы health и prompt", () => {
     expect(body.redis.ok).toBe(false);
     expect(body.redis.reason).toContain("не настроен");
     expect(body.telegram.ok).toBe(false);
+    // Сети не было: llm и store вернули «не настроен» до транспорта,
+    // tg бросил до fetch (нет токена)
+    expect(guard).not.toHaveBeenCalled();
   });
 });

@@ -1,7 +1,7 @@
-import { answer } from "../brain/brain.js";
+import { answer, type Brain } from "../brain/brain.js";
 import { knowledgeEntries } from "../brain/prompt.js";
 import { hitRateLimit } from "../rate-limit.js";
-import { appendHistory, getHistory, webKey } from "../store.js";
+import { appendHistory, getHistory, webKey, type Store } from "../store.js";
 
 // sessionId — данные клиента и часть ключа Redis, поэтому жёсткий белый список:
 // только [A-Za-z0-9_-], длина 8–64 (uuid и crypto-строки проходят). Всё, что не
@@ -42,80 +42,114 @@ function clientIp(request: Request): string {
 }
 
 /**
- * Обработчик /api/chat — бэкенд вебчата. GET отдаёт статус и чипсы-подсказки
- * (первые 3 элемента справки); POST {sessionId, text} — ответ «мозга» с
- * серверной историей диалога (достать → спросить → дописать пару вопрос/ответ).
- *
- * Стены против злоупотреблений, до парсинга тела: same-origin (чужая страница
- * не может гонять запросы из браузеров посетителей) → rate-limit по IP
- * (см. bot/rate-limit.ts). Дальше валидация: sessionId —
- * [A-Za-z0-9_-]{8,64}, text — непустой до 2000 символов; нарушение, битый JSON
- * или чужой метод — JSON с ok:false (400/405).
- * Fail-open по store: без Redis ответ всё равно уходит, просто без контекста.
- *
- * @param {Request} request - Входящий запрос функции.
- * @returns {Promise<Response>} GET → {ok, service, chips}; POST → {ok, text, mode}.
+ * Зависимости обработчика вебчата — точки инъекции для тестов; дефолтная
+ * сборка handleWebChat берёт дефолтные инстансы store/brain/rate-limit.
  */
-export async function handleWebChat(request: Request): Promise<Response> {
-  if (request.method === "GET") {
-    const chips = knowledgeEntries()
-      .slice(0, CHIPS_COUNT)
-      .map((item) => ({ title: item.title }));
-    return Response.json({ ok: true, service: "webchat", chips });
-  }
-  if (request.method !== "POST") {
-    return Response.json({ ok: false, error: "Method Not Allowed" }, { status: 405 });
-  }
-
-  // Стены идут до парсинга тела: чужой Origin и шторм отсекаются без траты CPU
-  // на JSON.parse (тело могло быть на 4.5 МБ мусора) и без Redis/LLM.
-  if (!sameOrigin(request)) {
-    return Response.json({ ok: false, error: "Запрос с чужого источника" }, { status: 403 });
-  }
-  if (!(await hitRateLimit(`web:${clientIp(request)}`))) {
-    return Response.json(
-      { ok: false, error: "Слишком много запросов — попробуй позже" },
-      { status: 429 },
-    );
-  }
-
-  let payload: unknown;
-  try {
-    payload = await request.json();
-  } catch {
-    return Response.json({ ok: false, error: "Invalid JSON" }, { status: 400 });
-  }
-
-  const { sessionId, text } = (payload ?? {}) as { sessionId?: unknown; text?: unknown };
-
-  if (typeof sessionId !== "string" || !SESSION_ID_PATTERN.test(sessionId)) {
-    return Response.json({ ok: false, error: "Некорректный sessionId" }, { status: 400 });
-  }
-
-  const question = typeof text === "string" ? text.trim() : "";
-  if (!question || question.length > MAX_TEXT_LENGTH) {
-    return Response.json(
-      { ok: false, error: `Нужен непустой text до ${MAX_TEXT_LENGTH} символов` },
-      { status: 400 },
-    );
-  }
-
-  // История диалога живёт на сервере: достали → спросили → сохранили пару
-  // вопрос/ответ. Fail-open store: без Redis ответ всё равно уходит.
-  //
-  // Асимметрия каналов сознательна: здесь запись ДО возврата ответа — после
-  // return в serverless ничего не выполнить, а waitUntil (новая зависимость)
-  // сознательно не заводим. У вебчата нет автоматического повтора доставки,
-  // поэтому «фантомная пара» при упавшей отправке менее вредна, чем в
-  // Telegram, где порядок обратный — отправить → записать (см.
-  // bot/http/telegram-webhook.ts).
-  const key = webKey(sessionId);
-  const history = await getHistory(key);
-  const { text: reply, mode } = await answer(question, history);
-  await appendHistory(key, [
-    { role: "user", content: question },
-    { role: "assistant", content: reply },
-  ]);
-
-  return Response.json({ ok: true, text: reply, mode });
+export interface WebChatHandlerDeps {
+  /** Слайс хранилища: достать и дописать историю диалога. */
+  store: Pick<Store, "getHistory" | "appendHistory">;
+  /** «Мозг»: ответ на вопрос с учётом истории. */
+  brain: Pick<Brain, "answer">;
+  /** Лимитер по бакету `web:{ip}`; true — запрос в пределах лимита. */
+  limit: (bucket: string) => Promise<boolean>;
 }
+
+/**
+ * Фабрика обработчика /api/chat: тело и приватные помощники (sameOrigin,
+ * clientIp) живут в замыкании над deps — тесты подставляют фейки вместо
+ * store/brain/лимитера, не трогая сеть.
+ * @param {WebChatHandlerDeps} deps - Инъекции store/brain/limit.
+ * @returns Обработчик handleWebChat(request).
+ */
+export function createWebChatHandler(deps: WebChatHandlerDeps) {
+  const { store, brain, limit } = deps;
+
+  /**
+   * Обработчик /api/chat — бэкенд вебчата. GET отдаёт статус и чипсы-подсказки
+   * (первые 3 элемента справки); POST {sessionId, text} — ответ «мозга» с
+   * серверной историей диалога (достать → спросить → дописать пару вопрос/ответ).
+   *
+   * Стены против злоупотреблений, до парсинга тела: same-origin (чужая страница
+   * не может гонять запросы из браузеров посетителей) → rate-limit по IP
+   * (см. bot/rate-limit.ts). Дальше валидация: sessionId —
+   * [A-Za-z0-9_-]{8,64}, text — непустой до 2000 символов; нарушение, битый JSON
+   * или чужой метод — JSON с ok:false (400/405).
+   * Fail-open по store: без Redis ответ всё равно уходит, просто без контекста.
+   *
+   * @param {Request} request - Входящий запрос функции.
+   * @returns {Promise<Response>} GET → {ok, service, chips}; POST → {ok, text, mode}.
+   */
+  async function handleWebChat(request: Request): Promise<Response> {
+    if (request.method === "GET") {
+      const chips = knowledgeEntries()
+        .slice(0, CHIPS_COUNT)
+        .map((item) => ({ title: item.title }));
+      return Response.json({ ok: true, service: "webchat", chips });
+    }
+    if (request.method !== "POST") {
+      return Response.json({ ok: false, error: "Method Not Allowed" }, { status: 405 });
+    }
+
+    // Стены идут до парсинга тела: чужой Origin и шторм отсекаются без траты CPU
+    // на JSON.parse (тело могло быть на 4.5 МБ мусора) и без Redis/LLM.
+    if (!sameOrigin(request)) {
+      return Response.json({ ok: false, error: "Запрос с чужого источника" }, { status: 403 });
+    }
+    if (!(await limit(`web:${clientIp(request)}`))) {
+      return Response.json(
+        { ok: false, error: "Слишком много запросов — попробуй позже" },
+        { status: 429 },
+      );
+    }
+
+    let payload: unknown;
+    try {
+      payload = await request.json();
+    } catch {
+      return Response.json({ ok: false, error: "Invalid JSON" }, { status: 400 });
+    }
+
+    const { sessionId, text } = (payload ?? {}) as { sessionId?: unknown; text?: unknown };
+
+    if (typeof sessionId !== "string" || !SESSION_ID_PATTERN.test(sessionId)) {
+      return Response.json({ ok: false, error: "Некорректный sessionId" }, { status: 400 });
+    }
+
+    const question = typeof text === "string" ? text.trim() : "";
+    if (!question || question.length > MAX_TEXT_LENGTH) {
+      return Response.json(
+        { ok: false, error: `Нужен непустой text до ${MAX_TEXT_LENGTH} символов` },
+        { status: 400 },
+      );
+    }
+
+    // История диалога живёт на сервере: достали → спросили → сохранили пару
+    // вопрос/ответ. Fail-open store: без Redis ответ всё равно уходит.
+    //
+    // Асимметрия каналов сознательна: здесь запись ДО возврата ответа — после
+    // return в serverless ничего не выполнить, а waitUntil (новая зависимость)
+    // сознательно не заводим. У вебчата нет автоматического повтора доставки,
+    // поэтому «фантомная пара» при упавшей отправке менее вредна, чем в
+    // Telegram, где порядок обратный — отправить → записать (см.
+    // bot/http/telegram-webhook.ts).
+    const key = webKey(sessionId);
+    const history = await store.getHistory(key);
+    const { text: reply, mode } = await brain.answer(question, history);
+    await store.appendHistory(key, [
+      { role: "user", content: question },
+      { role: "assistant", content: reply },
+    ]);
+
+    return Response.json({ ok: true, text: reply, mode });
+  }
+
+  return handleWebChat;
+}
+
+// Дефолтная сборка из поимённых экспортов модулей: api/bot.ts импортирует
+// handler напрямую, тесты приходят со своими фейками через createWebChatHandler.
+export const handleWebChat = createWebChatHandler({
+  store: { getHistory, appendHistory },
+  brain: { answer },
+  limit: hitRateLimit,
+});
