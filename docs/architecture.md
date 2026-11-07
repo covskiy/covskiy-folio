@@ -106,8 +106,12 @@ export default {
 - Webhook принимает только POST с заголовком `X-Telegram-Bot-Api-Secret-Token`,
   равным `TELEGRAM_WEBHOOK_SECRET` (секрет задаётся при setWebhook). Иначе — 401:
   чужие запросы не тратят вызовы LLM.
-- Свободный текст и нажатая inline-кнопка идут одним потоком: история из Redis →
-  `answer()` → пара вопрос/ответ в историю → `sendMessage`. Команды (`/start`,
+- Свободный текст и нажатая inline-кнопка идут одним потоком: `sendChatAction`
+  «печатает…» (ошибка глотается — косметика) → история из Redis → `answer()` →
+  `sendMessage` → пара вопрос/ответ в историю. Порядок «отправить → записать»:
+  при упавшей отправке в историю не должно попасть ничего — фантомная пара
+  осталась бы в контексте, и при повторе LLM продолжал бы старую мысль. У
+  вебчата порядок обратный — см. bot/http/webchat.ts. Команды (`/start`,
   `/help`, `/reset`, `/about`) в историю не пишутся — это действия интерфейса,
   а не реплики диалога.
 - `/start` — приветствие + inline-кнопки (первые 3 заголовка справки). Кнопка
@@ -124,8 +128,8 @@ export default {
   повторять доставку update). Сообщения без текста (фото, стикеры) грациозно
   игнорируются.
 - `bot/telegram-api.ts` — тонкая обёртка Bot API на `fetch`, без зависимостей:
-  `sendMessage`, `editMessageText`, `answerCallbackQuery`, `setWebhook`,
-  `getWebhookInfo`.
+  `sendMessage`, `editMessageText`, `answerCallbackQuery`, `sendChatAction`,
+  `setWebhook`, `getWebhookInfo`.
 
 ## Админ-маршрут — /api/telegram-setup (bot/http/telegram-admin.ts)
 

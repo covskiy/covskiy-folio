@@ -229,14 +229,13 @@ function dumbAnswer(question: string): string {
  *
  * @param {string} question - Текущий вопрос пользователя.
  * @param {ChatMessage[]} [history=[]] - Предыдущие сообщения диалога (уже
- *   достанные из store); в промт идут последние 10. Telegram-обработчик пока
- *   зовёт answer(question) без неё, контекст туда подключит шаг 5 плана.
+ *   достанные из store); в промт идут последние 10.
  * @returns {Promise<BrainAnswer>} Текст ответа и mode: 'llm' | 'dumb'.
  */
 export async function answer(question: string, history: ChatMessage[] = []): Promise<BrainAnswer> {
   // question — текущий вопрос пользователя, history — предыдущие сообщения
-  // диалога (уже достанные из store). История необязательна: Telegram-обработчик
-  // пока зовёт answer(question) без неё, контекст туда подключит шаг 5 плана.
+  // диалога (уже достанные из store; оба канала передают её, см. вебчат и
+  // bot/http/telegram-webhook.ts).
 
   const recent = history.slice(-HISTORY_WINDOW).map(({ role, content }) => ({ role, content }));
   try {

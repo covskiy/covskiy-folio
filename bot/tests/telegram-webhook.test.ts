@@ -157,16 +157,18 @@ describe("handleTelegramWebhook", () => {
     expect(String(tgBody(fetchMock, 0).text)).toContain("/help");
   });
 
-  it("вопрос → история+brain+sendMessage, ответ пишется в историю как пара", async () => {
+  it("вопрос → typing+brain+sendMessage, ответ пишется в историю как пара", async () => {
     vi.stubEnv("TELEGRAM_WEBHOOK_SECRET", SECRET);
     stubLlm();
     const fetchMock = stubFetch();
 
     await handleTelegramWebhook(updateWithText("кто ты?"));
 
-    expect(tgUrl(fetchMock, 0)).toContain("chat/completions");
-    expect(tgMethod(fetchMock, 1)).toBe("sendMessage");
-    expect(tgBody(fetchMock, 1)).toMatchObject({ chat_id: 42, text: "ответ brain" });
+    // Индикатор «печатает…» уходит до обращения к LLM
+    expect(tgMethod(fetchMock, 0)).toBe("sendChatAction");
+    expect(tgUrl(fetchMock, 1)).toContain("chat/completions");
+    expect(tgMethod(fetchMock, 2)).toBe("sendMessage");
+    expect(tgBody(fetchMock, 2)).toMatchObject({ chat_id: 42, text: "ответ brain" });
   });
 
   it("callback ask:{n} → answerCallbackQuery, ответ как обычный вопрос, клавиатура снята", async () => {
@@ -180,17 +182,18 @@ describe("handleTelegramWebhook", () => {
     expect(tgMethod(fetchMock, 0)).toBe("answerCallbackQuery");
     expect(tgBody(fetchMock, 0)).toMatchObject({ callback_query_id: "cbq-1" });
     // Вопрос кнопки — title элемента справки, уходит в LLM как обычная реплика
-    expect(tgUrl(fetchMock, 1)).toContain("chat/completions");
+    expect(tgMethod(fetchMock, 1)).toBe("sendChatAction");
+    expect(tgUrl(fetchMock, 2)).toContain("chat/completions");
     const llmBody = JSON.parse(
-      String((fetchMock.mock.calls[1] as [string, RequestInit])[1].body),
+      String((fetchMock.mock.calls[2] as [string, RequestInit])[1].body),
     ) as {
       messages: { content: string }[];
     };
     expect(llmBody.messages.at(-1)?.content).toBe("Чем могу помочь");
-    expect(tgMethod(fetchMock, 2)).toBe("sendMessage");
+    expect(tgMethod(fetchMock, 3)).toBe("sendMessage");
     // Клавиатура снята: editMessageText тем же текстом, без reply_markup
-    expect(tgMethod(fetchMock, 3)).toBe("editMessageText");
-    const edit = tgBody(fetchMock, 3);
+    expect(tgMethod(fetchMock, 4)).toBe("editMessageText");
+    const edit = tgBody(fetchMock, 4);
     expect(edit).toMatchObject({ chat_id: 42, message_id: 10 });
     expect(edit.reply_markup).toBeUndefined();
   });
@@ -241,8 +244,15 @@ describe("handleTelegramWebhook", () => {
 /**
  * Полный стек на Map-«Redis»: REST-команды Upstash обслуживаются локальной Map
  * (get/set/del), Bot API — успехом, LLM — фиксированным ответом.
+ * @param {string} llmText - Ответ, который возвращает LLM.
+ * @param {string} [replySendFailsText] - Если задан: sendMessage с таким текстом
+ *   падает (ok:false) — для проверки порядка «отправить → записать»; fallback
+ *   «технические неполадки» при этом должен пройти.
  */
-function stubRedisBotApiAndLlm(llmText: string): {
+function stubRedisBotApiAndLlm(
+  llmText: string,
+  replySendFailsText?: string,
+): {
   fetchMock: ReturnType<typeof vi.fn>;
   store: Map<string, string>;
 } {
@@ -285,8 +295,20 @@ function stubRedisBotApiAndLlm(llmText: string): {
       throw new Error(`неожиданная команда Redis: ${command[0]}`);
     }
     if (url.includes("api.telegram.org")) {
-      const result = url.includes("/sendMessage") ? { message_id: 2, chat: { id: 42 } } : true;
-      return new Response(JSON.stringify({ ok: true, result }), {
+      if (url.includes("/sendMessage")) {
+        const payload = JSON.parse(String(init?.body)) as { text?: string };
+        if (payload.text === replySendFailsText) {
+          return new Response(JSON.stringify({ ok: false, description: "падение отправки" }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+        return new Response(
+          JSON.stringify({ ok: true, result: { message_id: 2, chat: { id: 42 } } }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      return new Response(JSON.stringify({ ok: true, result: true }), {
         status: 200,
         headers: { "Content-Type": "application/json" },
       });
@@ -310,22 +332,25 @@ describe("handleTelegramWebhook: с включённым Redis (Map-мок REST)
 
     expect(res.status).toBe(200);
     expect(tgMethod(fetchMock, 0)).toBe("answerCallbackQuery");
-    // Pipeline лимитера, затем история досталась из Redis до похода в LLM
+    // Pipeline лимитера, затем индикатор «печатает…» до похода в Redis/LLM
     expect(tgUrl(fetchMock, 1)).toBe("http://upstash.test");
-    expect(tgUrl(fetchMock, 2)).toBe("http://upstash.test");
-    expect(tgUrl(fetchMock, 3)).toContain("chat/completions");
+    expect(tgMethod(fetchMock, 2)).toBe("sendChatAction");
+    // История досталась из Redis до похода в LLM
+    expect(tgUrl(fetchMock, 3)).toBe("http://upstash.test");
+    expect(tgUrl(fetchMock, 4)).toContain("chat/completions");
     const llmBody = JSON.parse(
-      String((fetchMock.mock.calls[3] as [string, RequestInit])[1].body),
+      String((fetchMock.mock.calls[4] as [string, RequestInit])[1].body),
     ) as { messages: { role: string; content: string }[] };
     expect(llmBody.messages.at(-2)).toMatchObject({ role: "user", content: "старый вопрос" });
     // Вопрос кнопки — title первого элемента справки
     expect(llmBody.messages.at(-1)).toMatchObject({ role: "user", content: "Кто я" });
-    // appendHistory — это get(4) + set(5) в Redis, затем sendMessage и editMessageText
-    expect(tgUrl(fetchMock, 4)).toBe("http://upstash.test");
-    expect(tgUrl(fetchMock, 5)).toBe("http://upstash.test");
-    expect(tgMethod(fetchMock, 6)).toBe("sendMessage");
-    expect(tgMethod(fetchMock, 7)).toBe("editMessageText");
-    const edit = tgBody(fetchMock, 7);
+    // Порядок «отправить → записать»: sendMessage раньше, appendHistory — это
+    // get(6) + set(7) в Redis, затем editMessageText
+    expect(tgMethod(fetchMock, 5)).toBe("sendMessage");
+    expect(tgUrl(fetchMock, 6)).toBe("http://upstash.test");
+    expect(tgUrl(fetchMock, 7)).toBe("http://upstash.test");
+    expect(tgMethod(fetchMock, 8)).toBe("editMessageText");
+    const edit = tgBody(fetchMock, 8);
     expect(edit).toMatchObject({ chat_id: 42, message_id: 10, text: "Привет!" });
     expect(edit.reply_markup).toBeUndefined();
 
@@ -387,6 +412,27 @@ describe("handleTelegramWebhook: с включённым Redis (Map-мок REST)
         { role: "assistant", content: "ответ brain" },
       ]),
     );
+  });
+
+  it("sendMessage упал → appendHistory не выполнялся (SET в Redis отсутствует), fallback уходит", async () => {
+    // Падает только отправка ответа LLM; fallback «технические неполадки» проходит.
+    const { fetchMock, store } = stubRedisBotApiAndLlm("ответ brain", "ответ brain");
+
+    const res = await handleTelegramWebhook(updateWithText("кто ты?"));
+
+    expect(res.status).toBe(200);
+    // Последний вызов Bot API — fallback-сообщение о неполадках
+    const lastCall = fetchMock.mock.calls.length - 1;
+    expect(tgMethod(fetchMock, lastCall)).toBe("sendMessage");
+    expect(String(tgBody(fetchMock, lastCall).text)).toContain("технические неполадки");
+    // Порядок «отправить → записать»: после упавшей отправки записи в историю нет
+    // (SET отсутствует), иначе фантомная пара осталась бы в контексте следующего
+    // вопроса. В Redis уходит только pipeline лимитера (incr) и get истории.
+    const redisCommands = fetchMock.mock.calls
+      .filter(([url]) => String(url) === "http://upstash.test")
+      .map(([, init]) => (JSON.parse(String((init as RequestInit).body)) as string[])[0]);
+    expect(redisCommands).not.toContain("set");
+    expect(store.size).toBe(0);
   });
 
   it("RATE_LIMIT_MAX исчерпан → текст лимита, LLM не вызывается, ответ остаётся 200", async () => {

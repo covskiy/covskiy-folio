@@ -7,6 +7,7 @@ import { appendHistory, clearHistory, getHistory, tgKey } from "../store.js";
 import {
   answerCallbackQuery,
   editMessageText,
+  sendChatAction,
   sendMessage,
   type TgInlineKeyboardMarkup,
   type TgMessage,
@@ -59,26 +60,40 @@ function startKeyboard(): TgInlineKeyboardMarkup {
   return { inline_keyboard: buttons.map((button) => [button]) };
 }
 
-// Единый поток для свободного текста и нажатой кнопки: лимит чата → история из
-// Redis → ответ brain → пара вопрос/ответ обратно в историю. Лимитер до
-// истории: шторм вопросов одного чата дешевле остановить до похода в Redis/LLM.
-// Бакет по chatId: атакующему нужны N аккаунтов на N параллельных потоков, а
-// Telegram сам душит массовые аккаунты. Fail-open store — без Redis лимит не
-// срабатывает. Команды (/start /help /reset /about) лимит не тратят: это
-// действия интерфейса без LLM.
+// Единый поток для свободного текста и нажатой кнопки: лимит чата → индикатор
+// «печатает…» → история из Redis → ответ brain → отправка → пара вопрос/ответ
+// в историю. Лимитер до истории: шторм вопросов одного чата дешевле остановить
+// до похода в Redis/LLM. Бакет по chatId: атакующему нужны N аккаунтов на N
+// параллельных потоков, а Telegram сам душит массовые аккаунты. Fail-open
+// store — без Redis лимит не срабатывает. Команды (/start /help /reset /about)
+// лимит не тратят: это действия интерфейса без LLM.
+//
+// Порядок «отправить → записать» сознателен: если отправка упала, в историю не
+// должно попасть ничего — фантомная пара осталась бы в контексте, и при
+// повторе LLM продолжал бы старую мысль. Обратная цена (сбой записи после
+// успешной отправки — пара не сохранится) — деградация в пределах fail-open,
+// она менее заметна.
 async function answerAsQuestion(chatId: number, question: string): Promise<void> {
   if (!(await hitRateLimit(`tg:${chatId}`))) {
     await sendMessage(chatId, RATE_LIMIT_TEXT);
     return;
   }
+  // Индикатор «печатает…» до похода в Redis/LLM; один вызов без таймеров и
+  // повторов — LLM обычно укладывается в окно ~5 с, повторять значило бы
+  // тратить время инвокации.
+  try {
+    await sendChatAction(chatId, "typing");
+  } catch {
+    // Индикатор — косметика, не повод терять ответ.
+  }
   const key = tgKey(chatId);
   const history = await getHistory(key);
   const { text: reply } = await answer(question, history);
+  await sendMessage(chatId, reply);
   await appendHistory(key, [
     { role: "user", content: question },
     { role: "assistant", content: reply },
   ]);
-  await sendMessage(chatId, reply);
 }
 
 // /about берём из справки: элемент с заголовком «Кто я». Заголовок может

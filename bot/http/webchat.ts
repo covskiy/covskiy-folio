@@ -102,6 +102,13 @@ export async function handleWebChat(request: Request): Promise<Response> {
 
   // История диалога живёт на сервере: достали → спросили → сохранили пару
   // вопрос/ответ. Fail-open store: без Redis ответ всё равно уходит.
+  //
+  // Асимметрия каналов сознательна: здесь запись ДО возврата ответа — после
+  // return в serverless ничего не выполнить, а waitUntil (новая зависимость)
+  // сознательно не заводим. У вебчата нет автоматического повтора доставки,
+  // поэтому «фантомная пара» при упавшей отправке менее вредна, чем в
+  // Telegram, где порядок обратный — отправить → записать (см.
+  // bot/http/telegram-webhook.ts).
   const key = webKey(sessionId);
   const history = await getHistory(key);
   const { text: reply, mode } = await answer(question, history);

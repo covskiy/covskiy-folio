@@ -160,6 +160,20 @@ export function editMessageText(
 }
 
 /**
+ * Служебный статус «печатает…» в шапке чата (sendChatAction Bot API):
+ * НЕ создаёт сообщение, в историю не попадает, исчезает сам (~5 с) — окно
+ * рассчитано на время генерации LLM. Ошибка здесь — косметика и не повод
+ * ронять обработку (глотает вызывающий).
+ * @param {number} chatId - Идентификатор чата.
+ * @param {string} action - Действие Bot API (у нас всегда "typing").
+ * @returns {Promise<boolean>} true при успехе.
+ * @throws {Error} Нет TELEGRAM_BOT_TOKEN, ошибка сети или Telegram API.
+ */
+export function sendChatAction(chatId: number, action: string): Promise<boolean> {
+  return tgCall<boolean>("sendChatAction", { chat_id: chatId, action });
+}
+
+/**
  * Состояние вебхука — подмножество WebhookInfo Bot API (диагностика доставки).
  */
 export interface TgWebhookInfo {
