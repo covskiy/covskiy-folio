@@ -138,4 +138,10 @@ export function createBrain(deps: BrainDeps = {}) {
   return { answer };
 }
 
+/**
+ * Тип инстанса «мозга» — для фабрик, принимающих brain как зависимость:
+ * структурная подмена в тестах без контрактов-файлов.
+ */
+export type Brain = ReturnType<typeof createBrain>;
+
 export const answer = createBrain().answer;
