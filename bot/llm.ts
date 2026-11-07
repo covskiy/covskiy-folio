@@ -29,7 +29,7 @@ export type LlmMessage = ChatMessage | { role: "system"; content: string };
  *
  * Дублирование «fetch + timeout + JSON» с telegram-api и redis-rest оставлено
  * сознательно: у трёх мест разная семантика ошибок (throw / ok:false /
- * fail-open), общий хелпер сделает хуже (см. задачу §12).
+ * fail-open), общий хелпер сделает хуже.
  */
 
 /** Зависимости транспорта — точки инъекции для тестов; в рантайме createLlm(). */
@@ -66,7 +66,7 @@ const LLM_PING_TIMEOUT_MS = 10_000;
  * Фабрика транспорта: возвращает { chat, ping }. deps резолвятся на каждый
  * вызов chat/ping — подмена fetch/config после создания инстанса работает.
  * @param {LlmDeps} deps - Инъекции config/fetchImpl/clock/log; без аргументов —
- *   глобальный fetch и дефолтный config (process.env), как раньше.
+ *   глобальный fetch и дефолтный config (process.env).
  * @returns chat(messages) — бросает при любой проблеме; ping() — никогда не бросает.
  */
 export function createLlm(deps: LlmDeps = {}) {

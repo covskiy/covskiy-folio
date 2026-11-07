@@ -191,8 +191,9 @@ async function handleCallbackQuery(callback: TgCallbackQuery): Promise<void> {
  * с логом (пользователю уходит сообщение о неполадках, спиннер кнопки гасится).
  * Апдейты без текста (фото, стикеры) грациозно игнорируются.
  *
- * Env: TELEGRAM_WEBHOOK_SECRET (без него все запросы — 401); через lib —
- * TELEGRAM_BOT_TOKEN, UPSTASH_REDIS_REST_URL/TOKEN (fail-open без Redis).
+ * Env: TELEGRAM_WEBHOOK_SECRET (без него все запросы — 401); остальные —
+ * через bot/config.ts: TELEGRAM_BOT_TOKEN, UPSTASH_REDIS_REST_URL/TOKEN
+ * (fail-open без Redis).
  *
  * @param {Request} request - Входящий запрос функции.
  * @returns {Promise<Response>} JSON {ok:true}; 401 при неверном/отсутствующем секрете.

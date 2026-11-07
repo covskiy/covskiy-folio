@@ -7,13 +7,13 @@ import { systemPrompt } from "../brain/prompt.js";
 import { ping as pingRedis } from "../store.js";
 import { getWebhookInfo, setWebhook, type TgWebhookInfo } from "../telegram-api.js";
 
-// Дефолтный инстанс транспорта: env резолвится внутри на каждый вызов,
-// так что подмена env в тестах и Redeploy с новыми LLM_* работают как раньше.
+// Дефолтный инстанс транспорта: env резолвится внутри на каждый вызов, так что
+// подмена env в тестах и Redeploy с новыми LLM_* работают без пересоздания.
 const llm = createLlm();
 
 // Админ-маршрут: регистрация и диагностика Telegram-вебхука, health бота,
-// просмотр собранного промта (шаг 7 плана). Защищён тем же секретом, что и
-// вебхук; без секрета отвечаем 404, чтобы не подтверждать существование маршрута.
+// просмотр собранного промта. Защищён тем же секретом, что и вебхук; без
+// секрета отвечаем 404, чтобы не подтверждать существование маршрута.
 const SECRET_HEADER = "x-telegram-bot-api-secret-token";
 
 type TelegramHealth = { ok: true; webhook: TgWebhookInfo } | { ok: false; error: string };
@@ -73,15 +73,15 @@ export async function handleTelegramAdmin(request: Request): Promise<Response> {
 
   try {
     if (request.method === "GET") {
-      // Ветвление по query-параметру: маршрут исторически адресуется одним
-      // путём (/api/telegram-setup), подпути через vercel.json не заводим.
+      // Ветвление по query-параметру: маршрут адресуется одним путём
+      // (/api/telegram-setup), подпути через vercel.json не заводим.
       const section = new URL(request.url).searchParams.get("section");
       if (section === "health") return await healthResponse();
       if (section === "prompt") {
         // Под секретом можно целиком; справка уже внутри промта.
         return Response.json({ ok: true, prompt: systemPrompt() });
       }
-      // Без section — историческое поведение: диагностика вебхука.
+      // Без section — диагностика вебхука.
       const webhook = await getWebhookInfo();
       log.debug("telegram-admin", `getWebhookInfo: ${JSON.stringify(webhook)}`);
       return Response.json({ ok: true, webhook });
@@ -92,7 +92,7 @@ export async function handleTelegramAdmin(request: Request): Promise<Response> {
       const result = await setWebhook({
         url,
         secret_token: secret,
-        // callback_query нужен для кнопок-подсказок на /start (шаг 6 плана).
+        // callback_query нужен для кнопок-подсказок на /start.
         allowed_updates: ["message", "callback_query"],
       });
       log.info("telegram-admin", `вебхук установлен: ${url}`);

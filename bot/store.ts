@@ -1,7 +1,7 @@
-// Транспорт Upstash REST вынесен в redis-rest.ts (§11 фазы B): здесь остаётся
-// только домен — история, дедупликация, лимитер, ключи. Слайс redis.ts из config
-// переиспользуется напрямую: ping отличает «не настроен» от «нет ответа», это не
-// fail-open, а парсинг env-семейств живёт в config.ts.
+// Транспорт Upstash REST — в redis-rest.ts: здесь остаётся только домен —
+// история, дедупликация, лимитер, ключи. Слайс redis из config переиспользуется
+// напрямую: ping отличает «не настроен» от «нет ответа», это не fail-open,
+// а парсинг env-семейств живёт в config.ts.
 import { createRedisRest, type RedisRest } from "./redis-rest.js";
 // Тип инстанса логгера — структурная подмена в тестах без контрактов-файлов.
 import type { Logger } from "./log.js";
@@ -13,7 +13,7 @@ import type { AppConfig } from "./config.js";
  * Хранилище истории диалогов (вебчат + Telegram) поверх Upstash Redis REST API:
  * доменные операции над ключами (TTL, капы, парсинг) без протокола транспорта.
  * Фабрика createStore — шов для тестов (фейковый redis вместо сети); дефолтный
- * инстанс с поимённым переэкспортом сохраняет все существующие импорты store.
+ * инстанс с поимённым переэкспортом — точка прямых импортов доменных операций.
  */
 
 /**
@@ -75,10 +75,11 @@ export interface RedisPing {
 
 /**
  * Фабрика хранилища: доменные функции живут в замыкании над транспортом (как
- * answer в createBrain). Fail-open 1-в-1 с прежним модулем: ни одна функция
- * не бросает — гарантия fail-open лежит в транспорте (redis-rest возвращает
- * null вместо throw), домен лишь интерпретирует null как «пусто».
- * @param {StoreDeps} deps - Инъекции redis/log/config; без аргументов — поведение как раньше.
+ * answer в createBrain). Fail-open: ни одна функция не бросает — гарантия
+ * fail-open лежит в транспорте (redis-rest возвращает null вместо throw),
+ * домен лишь интерпретирует null как «пусто».
+ * @param {StoreDeps} deps - Инъекции redis/log/config; без аргументов — дефолтные
+ *   redis/config.
  * @returns Доменные операции над Redis (история, дедупликация, лимитер, ping, ключи).
  */
 export function createStore(deps: StoreDeps = {}) {
@@ -293,12 +294,11 @@ export function createStore(deps: StoreDeps = {}) {
   };
 }
 
-/** Тип инстанса хранилища — структурная подмена в тестах и будущих контрактах (§13). */
+/** Тип инстанса хранилища — структурная подмена в тестах. */
 export type Store = ReturnType<typeof createStore>;
 
-// Дефолтный инстанс с поимённым переэкспортом: все существующие импорты вида
-// `import { getHistory } from "./store.js"` по проекту (webchat, telegram-*,
-// rate-limit) не меняются.
+// Дефолтный инстанс с поимённым переэкспортом: потребители (webchat,
+// telegram-*, rate-limit) импортируют доменные операции напрямую из store.js.
 const defaultStore = createStore();
 export const incrCounter = defaultStore.incrCounter;
 export const getValue = defaultStore.getValue;

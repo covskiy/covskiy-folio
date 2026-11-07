@@ -29,7 +29,7 @@ function makeEnv(overrides: Record<string, string | undefined> = {}): NodeJS.Pro
   };
 }
 
-/** Инъекция config вместо env-мешка: литералы — как раньше, парсинг в config.ts. */
+/** Инъекция config вместо env-мешка: значения литералами, парсинг в config.ts. */
 function makeConfig(overrides: Record<string, string | undefined> = {}) {
   return createConfig(makeEnv(overrides));
 }
@@ -179,10 +179,10 @@ describe("chat", () => {
   });
 
   it("fetch/config резолвятся на каждый вызов: подмена после создания фабрики видна", async () => {
-    // Ловушка из задачи §12: если резолвить deps при создании, подмена
-    // глобального fetch (vi.stubGlobal) и env (vi.stubEnv → дефолтный config)
-    // после импорта была бы невидима. Ленивость config детально покрыта в
-    // config.test.ts; инъекционный вариант — в тесте max_tokens выше.
+    // Если резолвить deps при создании, подмена глобального fetch
+    // (vi.stubGlobal) и env (vi.stubEnv → дефолтный config) после импорта была
+    // бы невидима. Ленивость config детально покрыта в config.test.ts;
+    // инъекционный вариант — в тесте max_tokens выше.
     const llm = createLlm(); // без deps — глобальный fetch и дефолтный config
     vi.stubEnv("LLM_BASE_URL", "http://127.0.0.1:9999/v1");
     vi.stubEnv("LLM_MODEL", "test-model");

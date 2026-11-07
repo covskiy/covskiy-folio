@@ -106,7 +106,7 @@ describe("handleTelegramAdmin", () => {
   });
 });
 
-// ── Разделы health и prompt (шаг 7 плана) ───────────────────────────
+// ── Разделы health и prompt ─────────────────────────────────────────
 
 /** Ответ Bot API на getWebhookInfo для маршрутизации fetch по URL. */
 const WEBHOOK_RESULT = { url: "https://site.example/api/telegram", pending_update_count: 2 };

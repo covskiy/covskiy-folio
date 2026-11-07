@@ -9,7 +9,7 @@ function updateWithText(text: string, updateId?: number): Request {
   return new Request(URL, {
     method: "POST",
     headers: { "Content-Type": "application/json", ...SECRET_HEADER },
-    // update_id: undefined не попадает в JSON — старые тесты апдейт без него.
+    // update_id: undefined не попадает в JSON — апдейт без него тоже валиден.
     body: JSON.stringify({
       update_id: updateId,
       message: { message_id: 1, chat: { id: 42 }, text },

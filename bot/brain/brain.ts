@@ -29,7 +29,7 @@ export type Llm = ReturnType<typeof createLlm>;
 
 /**
  * Зависимости «мозга» — точки инъекции для тестов; в рантайме createBrain()
- * без аргументов (llm и log берутся как раньше).
+ * без аргументов (llm и log — дефолтные инстансы).
  */
 export interface BrainDeps {
   /** Транспорт LLM; по умолчанию createLlm() (глобальный fetch + process.env). */
@@ -87,9 +87,9 @@ function dumbAnswer(question: string): string {
 
 /**
  * Фабрика «мозга»: answer живёт в замыкании, llm/log — инъекции. Дефолтный
- * `answer = createBrain().answer` сохраняет все существующие `import { answer }`
- * без правок, а тесты подставляют фейковый llm вместо сети.
- * @param {BrainDeps} deps - Инъекции llm/log; без аргументов — поведение как раньше.
+ * `answer = createBrain().answer` — точка импорта для вебчата и Telegram;
+ * тесты подставляют фейковый llm вместо сети.
+ * @param {BrainDeps} deps - Инъекции llm/log; без аргументов — дефолтные llm/log.
  * @returns Обработчик answer(question, history).
  */
 export function createBrain(deps: BrainDeps = {}) {

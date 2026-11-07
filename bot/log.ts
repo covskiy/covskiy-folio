@@ -13,7 +13,8 @@ import { config, type AppConfig, type LogLevel } from "./config.js";
  * живёт в Map внутри замыкания, а не на уровне модуля — инстансы не гасят
  * предупреждения друг друга, а тестам не нужны уникальные module/key на тест и
  * fake timers: время (now) и вывод (out) инжектируются через deps. Дефолтный
- * `log = createLogger()` сохраняет все существующие `import { log }` без правок.
+ * `log = createLogger()` — единый инстанс для всех `import { log }` серверного
+ * кода.
  *
  * Vercel Observability маппит console.debug/info/warn/error на severity —
  * фильтрация по уровню в дашборде работает без нашего участия. Метод консоли
@@ -23,8 +24,7 @@ import { config, type AppConfig, type LogLevel } from "./config.js";
  * на дефолтном log продолжает работать.
  */
 
-// Локальное имя типа сохранено для минимального диффа; единственное
-// определение уровней теперь в config.ts (там же парсинг LOG_LEVEL).
+// Единственное определение уровней — в config.ts (там же парсинг LOG_LEVEL).
 type Level = LogLevel;
 
 // Порядок важности: строки ниже порога в лог не попадают.
@@ -32,7 +32,7 @@ const LEVEL_ORDER: Record<Level, number> = { debug: 0, info: 1, warn: 2, error: 
 
 /**
  * Зависимости логгера — точки инъекции для тестов; в рантайме используется
- * createLogger() без аргументов (env/now/out берутся как раньше).
+ * createLogger() без аргументов (env/now/out — дефолтные).
  */
 export interface LoggerDeps {
   /** Готовый конфиг; по умолчанию дефолтный config из config.ts (process.env). */
@@ -40,14 +40,14 @@ export interface LoggerDeps {
   /** Часы для троттлинга; по умолчанию Date.now. */
   now?: () => number;
   // Partial: тесты подменяют только те методы, которые проверяют; отсутствующие
-  // методы работают через console как раньше.
+  // методы работают через console.
   /** Приёмник вывода (по умолчанию глобальный console). */
   out?: Partial<Pick<Console, "debug" | "info" | "warn" | "error">>;
 }
 
 /**
  * Фабрика логгера: lastSeenAt троттлинга — Map внутри замыкания этого инстанса.
- * @param {LoggerDeps} deps - Инъекции env/now/out; без аргументов — поведение как раньше.
+ * @param {LoggerDeps} deps - Инъекции env/now/out; без аргументов — дефолтное поведение.
  * @returns Логгер с методами debug/info/warn/error/warnThrottled.
  */
 export function createLogger(deps: LoggerDeps = {}) {

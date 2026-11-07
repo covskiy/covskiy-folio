@@ -8,8 +8,8 @@ import type { AppConfig } from "./config.js";
  * Транспорт Upstash Redis REST API — единственное место, где код ходит в
  * Upstash по HTTP. Никакой доменной логики: команды приходят готовыми
  * массивами (`["get", key]`, …), а история/лимитер/дедупликация живут в
- * store.ts. Вынесен из store.ts (§11 фазы B), чтобы домен читался как «как
- * устроена история», а не «как устроен Upstash REST». Чистый fetch без SDK:
+ * store.ts. Разделение сознательное: store.ts читается как «как устроена
+ * история», а не «как устроен Upstash REST». Чистый fetch без SDK:
  * REST-эндпоинт у Upstash один, зависимости не нужны, а Vercel-функция и так
  * живёт на нативном fetch.
  *
@@ -24,7 +24,7 @@ import type { AppConfig } from "./config.js";
  *
  * Дублирование «fetch + timeout + JSON» с llm.ts и telegram-api.ts оставлено
  * сознательно: у трёх мест разная семантика ошибок (throw / ok:false /
- * fail-open), общий хелпер сделает хуже (см. задачу §12).
+ * fail-open), общий хелпер сделает хуже.
  */
 
 /** Зависимости транспорта — точки инъекции для тестов; в рантайме createRedisRest(). */
@@ -53,7 +53,7 @@ const DEFAULT_TIMEOUT_MS = 5_000;
  * троттлинг warn'ов живёт в Map внутри его замыкания, свежий логгер на вызов
  * превратил бы warnThrottled в спам.
  * @param {RedisRestDeps} deps - Инъекции config/fetchImpl/log/timeoutMs; без аргументов —
- *   глобальный fetch и дефолтный config (process.env), как раньше.
+ *   глобальный fetch и дефолтный config (process.env).
  * @returns command(command) — одна команда; pipeline(commands) — массив команд одним POST.
  */
 export function createRedisRest(deps: RedisRestDeps = {}) {

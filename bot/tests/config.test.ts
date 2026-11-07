@@ -45,7 +45,7 @@ describe("config: llm", () => {
     expect(cfg.llm).toMatchObject({ timeoutMs: 15_000, maxTokens: 1_024 });
   });
 
-  it("мусор/ноль/отрицательное/пустое в числах — дефолт (минус раньше проходил)", () => {
+  it("мусор/ноль/отрицательное/пустое в числах — дефолт: валидно только конечное и > 0", () => {
     for (const bad of ["abc", "0", "-5", ""]) {
       const cfg = createConfig({
         LLM_BASE_URL: "https://x",
