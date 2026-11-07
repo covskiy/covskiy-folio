@@ -211,7 +211,7 @@ describe("handleTelegramWebhook", () => {
     expect(keyboard?.inline_keyboard).toHaveLength(3);
     expect(keyboard?.inline_keyboard[0][0]).toMatchObject({
       callback_data: "ask:0",
-      text: "Кто я",
+      text: "Услуги",
     });
     expect(keyboard?.inline_keyboard[2][0]).toMatchObject({ callback_data: "ask:2" });
   });
@@ -245,7 +245,7 @@ describe("handleTelegramWebhook", () => {
     await handle(updateWithText("/about"));
 
     expect(tg.sendMessage).toHaveBeenCalledTimes(1);
-    expect(lastSend(tg)[1]).toContain("Меня зовут Covskiy");
+    expect(lastSend(tg)[1]).toContain("Константин Ковский");
   });
 
   it("неизвестная команда → подсказка вызвать /help", async () => {
@@ -299,7 +299,7 @@ describe("handleTelegramWebhook", () => {
     ]);
     expect(tg.answerCallbackQuery).toHaveBeenCalledWith("cbq-1");
     // Вопрос кнопки — title элемента справки, уходит в brain как обычная реплика
-    expect(brain.answer.mock.calls[0][0]).toBe("Чем могу помочь");
+    expect(brain.answer.mock.calls[0][0]).toBe("Стоимость");
     // Клавиатура снята: editMessageText тем же текстом, без reply_markup
     expect(tg.editMessageText).toHaveBeenCalledWith(42, 10, "Привет!");
   });
@@ -372,7 +372,7 @@ describe("handleTelegramWebhook: с фейковым store (история и д
       "tg:editMessageText",
     ]);
     // brain получил старую историю и вопрос кнопки — title первого элемента справки
-    expect(brain.answer).toHaveBeenCalledWith("Кто я", [
+    expect(brain.answer).toHaveBeenCalledWith("Услуги", [
       { role: "user", content: "старый вопрос" },
     ]);
     const edit = tg.editMessageText.mock.calls[0] as unknown[];
@@ -380,7 +380,7 @@ describe("handleTelegramWebhook: с фейковым store (история и д
 
     expect(history.get("chat:tg:42")).toEqual([
       { role: "user", content: "старый вопрос" },
-      { role: "user", content: "Кто я" },
+      { role: "user", content: "Услуги" },
       { role: "assistant", content: "ответ brain" },
     ]);
   });
