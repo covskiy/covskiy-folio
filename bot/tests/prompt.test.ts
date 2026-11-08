@@ -4,8 +4,8 @@ import { systemPrompt } from "../brain/prompt";
 describe("systemPrompt", () => {
   it("подставляет записи вместо {{KNOWLEDGE}}: секции с заголовками, плейсхолдер исчезает", () => {
     const prompt = systemPrompt([
-      { title: "Тема один", text: "Текст один" },
-      { title: "Тема два", text: "Текст два" },
+      { id: "one", title: "Тема один", text: "Текст один" },
+      { id: "two", title: "Тема два", text: "Текст два" },
     ]);
 
     expect(prompt).toContain("## Тема один\nТекст один");
@@ -14,7 +14,7 @@ describe("systemPrompt", () => {
   });
 
   it("кэш по идентичности массива: тот же массив — тот же промт без пересборки", () => {
-    const entries = [{ title: "Тема", text: "Текст" }];
+    const entries = [{ id: "topic", title: "Тема", text: "Текст" }];
 
     const first = systemPrompt(entries);
     const second = systemPrompt(entries);

@@ -9,11 +9,18 @@ const SECRET = "test-secret";
 const URL = "http://localhost/api/telegram";
 const SECRET_HEADER = { "x-telegram-bot-api-secret-token": SECRET };
 
-/** Фикстура справки: маркеры «Услуги»/«Стоимость»/«Константин Ковский» держат ассерты команд. */
+/** Фикстура справки: chip-записи НЕ первые (порядок массива не управляет кнопками),
+ *  «Кто я» — about-пометка без chip. Маркеры «Услуги»/«Стоимость»/«Константин Ковский» держат ассерты команд. */
 const KNOWLEDGE_ENTRIES: KnowledgeItem[] = [
-  { title: "Услуги", text: "Пять направлений: сайты, боты." },
-  { title: "Стоимость", text: "Оценка под конкретную задачу." },
-  { title: "Кто я", text: "Константин Ковский — тестовая справка." },
+  {
+    id: "intro",
+    title: "Вступление",
+    text: "Не попадает в кнопки: позиция массива не управляет UI.",
+  },
+  { id: "services", title: "Услуги", text: "Пять направлений: сайты, боты.", chip: true },
+  { id: "pricing", title: "Стоимость", text: "Оценка под конкретную задачу.", chip: true },
+  { id: "contacts", title: "Контакты", text: "Telegram: @devCovskiy.", chip: true },
+  { id: "about", title: "Кто я", text: "Константин Ковский — тестовая справка.", about: true },
 ];
 
 function updateWithText(text: string, updateId?: number): Request {
@@ -214,7 +221,7 @@ describe("handleTelegramWebhook", () => {
     expect(res.status).toBe(401);
   });
 
-  it("/start → приветствие с inline-кнопками-подсказками", async () => {
+  it("/start → приветствие с inline-кнопками по uiTopics: chip-записи не первые в массиве", async () => {
     vi.stubEnv("TELEGRAM_WEBHOOK_SECRET", SECRET);
     const { handle, tg } = makeHarness();
 
@@ -226,11 +233,12 @@ describe("handleTelegramWebhook", () => {
     expect(chatId).toBe(42);
     expect(text).toContain("Привет");
     expect(keyboard?.inline_keyboard).toHaveLength(3);
+    // callback_data несёт slug записи, а не индекс — правки контента не меняют смысл кнопки
     expect(keyboard?.inline_keyboard[0][0]).toMatchObject({
-      callback_data: "ask:0",
+      callback_data: "ask:services",
       text: "Услуги",
     });
-    expect(keyboard?.inline_keyboard[2][0]).toMatchObject({ callback_data: "ask:2" });
+    expect(keyboard?.inline_keyboard[2][0]).toMatchObject({ callback_data: "ask:contacts" });
   });
 
   it("/help → список умений, без обращения к LLM", async () => {
@@ -265,18 +273,18 @@ describe("handleTelegramWebhook", () => {
     expect(lastSend(tg)[1]).toContain("Константин Ковский");
   });
 
-  it("в справке нет «Кто я» → /about отвечает первой записью (позиционный fallback)", async () => {
+  it("в справке нет пометки about → /about отвечает заглушкой, а не произвольной первой записью", async () => {
     vi.stubEnv("TELEGRAM_WEBHOOK_SECRET", SECRET);
     const { handle, tg } = makeHarness({
       entries: [
-        { title: "Услуги", text: "Текст про услуги" },
-        { title: "Стоимость", text: "Текст про стоимость" },
+        { id: "services", title: "Услуги", text: "Текст про услуги" },
+        { id: "pricing", title: "Стоимость", text: "Текст про стоимость" },
       ],
     });
 
     await handle(updateWithText("/about"));
 
-    expect(lastSend(tg)[1]).toContain("Текст про услуги");
+    expect(lastSend(tg)[1]).toContain("Информация о владельце пока не заполнена");
   });
 
   it("справка недоступна: /start → приветствие без клавиатуры, а не «неполадки»", async () => {
@@ -335,11 +343,11 @@ describe("handleTelegramWebhook", () => {
     ]);
   });
 
-  it("callback ask:{n} → answerCallbackQuery, ответ как обычный вопрос, клавиатура снята", async () => {
+  it("callback ask:{id} → answerCallbackQuery, ответ как обычный вопрос, клавиатура снята", async () => {
     vi.stubEnv("TELEGRAM_WEBHOOK_SECRET", SECRET);
     const { handle, events, tg, brain } = makeHarness();
 
-    const res = await handle(updateWithCallback("ask:1", 10));
+    const res = await handle(updateWithCallback("ask:pricing", 10));
 
     expect(res.status).toBe(200);
     expect(events).toEqual([
@@ -353,17 +361,29 @@ describe("handleTelegramWebhook", () => {
       "tg:editMessageText",
     ]);
     expect(tg.answerCallbackQuery).toHaveBeenCalledWith("cbq-1");
-    // Вопрос кнопки — title элемента справки, уходит в brain как обычная реплика
+    // Вопрос кнопки — title записи по её id, уходит в brain как обычная реплика
     expect(brain.answer.mock.calls[0][0]).toBe("Стоимость");
     // Клавиатура снята: editMessageText тем же текстом, без reply_markup
     expect(tg.editMessageText).toHaveBeenCalledWith(42, 10, "Привет!");
   });
 
-  it("битый callback_data → answerCallbackQuery с текстом-ошибкой, LLM молчит", async () => {
+  it("битый callback_data (не slug) → answerCallbackQuery с текстом-ошибкой, LLM молчит", async () => {
     vi.stubEnv("TELEGRAM_WEBHOOK_SECRET", SECRET);
     const { handle, tg, brain } = makeHarness();
 
+    // ask:999 — формат legacy-кнопок с индексом: новый паттерн его не пускает
     await handle(updateWithCallback("ask:999"));
+
+    expect(tg.answerCallbackQuery).toHaveBeenCalledTimes(1);
+    expect(tg.answerCallbackQuery).toHaveBeenCalledWith("cbq-1", expect.any(String));
+    expect(brain.answer).not.toHaveBeenCalled();
+  });
+
+  it("id кнопки не найден (запись удалили/переименовали) → «кнопка устарела», не чужой ответ", async () => {
+    vi.stubEnv("TELEGRAM_WEBHOOK_SECRET", SECRET);
+    const { handle, tg, brain } = makeHarness();
+
+    await handle(updateWithCallback("ask:removed-topic"));
 
     expect(tg.answerCallbackQuery).toHaveBeenCalledTimes(1);
     expect(tg.answerCallbackQuery).toHaveBeenCalledWith("cbq-1", expect.any(String));
@@ -417,13 +437,13 @@ describe("handleTelegramWebhook", () => {
 });
 
 describe("handleTelegramWebhook: с фейковым store (история и дедупликация на Map)", () => {
-  it("callback ask:0 → answerCallbackQuery → brain с историей → sendMessage → appendHistory → editMessageText, пара в истории", async () => {
+  it("callback ask:services → answerCallbackQuery → brain с историей → sendMessage → appendHistory → editMessageText, пара в истории", async () => {
     vi.stubEnv("TELEGRAM_WEBHOOK_SECRET", SECRET);
     const { handle, events, history, tg, brain } = makeHarness();
     // Предыдущий диалог: brain должен получить его вместе с вопросом кнопки.
     history.set("chat:tg:42", [{ role: "user", content: "старый вопрос" }]);
 
-    const res = await handle(updateWithCallback("ask:0", 10));
+    const res = await handle(updateWithCallback("ask:services", 10));
 
     expect(res.status).toBe(200);
     // Полный порядок: спиннер → лимит → «печатает…» → история → brain →
@@ -438,7 +458,7 @@ describe("handleTelegramWebhook: с фейковым store (история и д
       "store:appendHistory",
       "tg:editMessageText",
     ]);
-    // brain получил старую историю и вопрос кнопки — title первого элемента справки
+    // brain получил старую историю и вопрос кнопки — title записи по её id
     expect(brain.answer).toHaveBeenCalledWith("Услуги", [
       { role: "user", content: "старый вопрос" },
     ]);

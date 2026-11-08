@@ -1,5 +1,5 @@
 import { answer, type Brain } from "../brain/brain.js";
-import { knowledge as rootKnowledge, type KnowledgeStore } from "../brain/knowledge.js";
+import { uiTopics, knowledge as rootKnowledge, type KnowledgeStore } from "../brain/knowledge.js";
 import { hitRateLimit } from "../rate-limit.js";
 import { appendHistory, getHistory, webKey, type Store } from "../store.js";
 
@@ -11,11 +11,6 @@ const SESSION_ID_PATTERN = /^[A-Za-z0-9_-]{8,64}$/;
 // Лимит текста вопроса: совпадает с maxlength инпута виджета
 // (src/chat/chat-widget.ts) — длиннее клиент всё равно не отправит.
 const MAX_TEXT_LENGTH = 2_000;
-
-// План: «чипсы сайта — первые 3 элемента JSON». Форма {title}: клик по чипу
-// отправляет title как готовый вопрос текстом — заголовки справки сформулированы
-// как темы-вопросы, отдельное поле q ничего бы не добавило, кроме сущности.
-const CHIPS_COUNT = 3;
 
 // Origin-проверка — стена против drive-by из чужих страниц: браузер сам ставит
 // Origin на каждый POST и JS не может его подделать (forbidden header name),
@@ -68,8 +63,8 @@ export function createWebChatHandler(deps: WebChatHandlerDeps) {
 
   /**
    * Обработчик /api/chat — бэкенд вебчата. GET отдаёт статус и чипсы-подсказки
-   * (первые 3 валидированные записи справки; недоступная справка — пустой
-   * список: чипсы декорация, виджет переживает их отсутствие); POST
+   * (uiTopics: помеченные chip: true записи, максимум 3; недоступная справка —
+   * пустой список: чипсы декорация, виджет переживает их отсутствие); POST
    * {sessionId, text} — ответ «мозга» с серверной историей диалога
    * (достать → спросить → дописать пару вопрос/ответ).
    *
@@ -85,11 +80,13 @@ export function createWebChatHandler(deps: WebChatHandlerDeps) {
    */
   async function handleWebChat(request: Request): Promise<Response> {
     if (request.method === "GET") {
-      // Чипсы — декорация: недоступная справка даёт пустой список, а не 500
-      // (причина деградации уже в логе хранилища справки).
-      const chips = (knowledge.load() ?? [])
-        .slice(0, CHIPS_COUNT)
-        .map((item) => ({ title: item.title }));
+      // Чипсы — те же uiTopics, что кнопки /start: один состав на оба канала.
+      // Форма {title}: клик по чипу отправляет title как готовый вопрос текстом —
+      // заголовки справки сформулированы как темы-вопросы, отдельное поле q
+      // ничего бы не добавило, кроме сущности. Чипсы — декорация: недоступная
+      // справка или пометки chip дают пустой список, а не 500 (причина — в логе
+      // хранилища справки).
+      const chips = uiTopics(knowledge).map((item) => ({ title: item.title }));
       return Response.json({ ok: true, service: "webchat", chips });
     }
     if (request.method !== "POST") {

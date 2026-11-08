@@ -14,7 +14,7 @@ const PROMPT_URL = `${SETUP_URL}?section=prompt`;
 
 /** Фикстура справки: маркеры промт-теста. */
 const PROMPT_ENTRIES: KnowledgeItem[] = [
-  { title: "Тема-фикстура", text: "Текст-фикстура справки" },
+  { id: "fixture-topic", title: "Тема-фикстура", text: "Текст-фикстура справки" },
 ];
 
 /** Ответ Bot API на getWebhookInfo (фикстура для пункта telegram в health). */

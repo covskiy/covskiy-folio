@@ -3,7 +3,12 @@
 import { config } from "../config.js";
 import { log as rootLog, type Logger } from "../log.js";
 import { answer, type Brain } from "../brain/brain.js";
-import { knowledge as rootKnowledge, type KnowledgeStore } from "../brain/knowledge.js";
+import {
+  ID_PATTERN_SOURCE,
+  uiTopics,
+  knowledge as rootKnowledge,
+  type KnowledgeStore,
+} from "../brain/knowledge.js";
 import { hitRateLimit } from "../rate-limit.js";
 import {
   appendHistory,
@@ -49,11 +54,14 @@ const CALLBACK_ERROR_TEXT = "Кнопка устарела. Набери /start 
 const RATE_LIMIT_TEXT =
   "Слишком много вопросов подряд — сделай небольшую паузу и попробуй снова 🙂";
 
-// На /start — первые 3 элемента справки, те же темы, что чипсы вебчата.
-const START_BUTTONS_COUNT = 3;
-
 // Час — с запасом перекрывает ретраи Telegram по одному апдейту, ключи чистятся сами.
 const SEEN_TTL_SECONDS = 3_600;
+
+// Разбор callback_data кнопки /start: ask:{id}. Slug-часть берётся из того же
+// источника формата, что валидирует записи (ID_PATTERN_SOURCE), поэтому кнопка
+// без записи-источника невозможна; legacy-кнопки с индексом (ask:0, только
+// цифры) паттерн не совпадает — уходят в ветку «кнопка устарела».
+const CALLBACK_PATTERN = new RegExp(`^ask:(${ID_PATTERN_SOURCE})$`);
 
 interface TgCallbackQuery {
   id: string;
@@ -102,17 +110,20 @@ export interface TelegramWebhookHandlerDeps {
 export function createTelegramWebhookHandler(deps: TelegramWebhookHandlerDeps) {
   const { store, brain, tg, log, limit, knowledge } = deps;
 
-  // callback_data ограничен 64 байтами, поэтому кнопка несёт только индекс,
-  // а вопрос восстанавливается из справки по номеру (те же темы, что чипсы сайта).
-  // Справка недоступна или пуста → undefined: /start уходит приветствием без
-  // кнопок — интерфейсная команда не должна превращаться в «технические неполадки».
+  // Кнопки /start — те же uiTopics, что чипсы вебчата: один состав на оба канала.
+  // Кнопка несёт стабильный id записи (callback_data ограничен 64 байтами, slug
+  // влезает с запасом): перестановка/правка контента не меняет смысл старой
+  // кнопки. Справка недоступна или пометок chip нет → undefined: /start уходит
+  // приветствием без кнопок — интерфейсная команда не должна превращаться
+  // в «технические неполадки».
   function startKeyboard(): TgInlineKeyboardMarkup | undefined {
-    const entries = knowledge.load();
-    if (!entries?.length) return undefined;
-    const buttons = entries
-      .slice(0, START_BUTTONS_COUNT)
-      .map((item, index) => ({ text: item.title, callback_data: `ask:${index}` }));
-    return { inline_keyboard: buttons.map((button) => [button]) };
+    const topics = uiTopics(knowledge);
+    if (topics.length === 0) return undefined;
+    return {
+      inline_keyboard: topics.map((item) => [
+        { text: item.title, callback_data: `ask:${item.id}` },
+      ]),
+    };
   }
 
   // Единый поток для свободного текста и нажатой кнопки: лимит чата → индикатор
@@ -151,13 +162,13 @@ export function createTelegramWebhookHandler(deps: TelegramWebhookHandlerDeps) {
     ]);
   }
 
-  // /about берём из справки: элемент с заголовком «Кто я». Заголовок может
-  // переименовать сам владелец (контент правится в knowledge.json без правки
-  // кода), поэтому fallback — первый элемент. Недоступная или пустая справка —
-  // осмысленная заглушка: команда интерфейсная, «неполадки» на ней не нужны.
+  // /about берём запись с пометкой about: true — явный признак в контенте
+  // вместо привязки к точному заголовку «Кто я» (заголовок можно переименовывать
+  // свободно). Пометки нет или справка недоступна — осмысленная заглушка, а не
+  // произвольная первая запись: команда интерфейсная, «неполадки» на ней не нужны.
   async function aboutText(): Promise<string> {
     const entries = knowledge.load();
-    const about = entries?.find((item) => item.title === "Кто я") ?? entries?.[0];
+    const about = entries?.find((item) => item.about === true);
     return about?.text ?? "Информация о владельце пока не заполнена.";
   }
 
@@ -186,13 +197,14 @@ export function createTelegramWebhookHandler(deps: TelegramWebhookHandlerDeps) {
   }
 
   async function handleCallbackQuery(callback: TgCallbackQuery): Promise<void> {
-    const match = /^ask:(\d+)$/.exec(callback.data ?? "");
+    const match = CALLBACK_PATTERN.exec(callback.data ?? "");
     const entries = knowledge.load();
-    const index = match ? Number(match[1]) : Number.NaN;
-    // Недоступная справка — тот же путь, что битый формат: «кнопка устарела»,
-    // честный ответ вместо молча погасшего спиннера.
+    const id = match ? match[1] : null;
+    // Неизвестный id (запись удалили/переименовали после отправки /start),
+    // битый формат и legacy-кнопки с индексом — один путь «кнопка устарела»:
+    // честный ответ вместо чужого ответа не на ту тему.
     const entry =
-      entries !== null && Number.isInteger(index) && index >= 0 ? entries[index] : undefined;
+      id !== null && entries !== null ? entries.find((item) => item.id === id) : undefined;
 
     if (!entry) {
       // Битый формат или индекс вне диапазона: гасим спиннер с пояснением,
@@ -225,7 +237,7 @@ export function createTelegramWebhookHandler(deps: TelegramWebhookHandlerDeps) {
   /**
    * Обработчик /api/telegram — все апдейты Telegram-бота: свободный текст → ответ
    * «мозга» с серверной историей, команды /start /help /reset /about, нажатия
-   * inline-кнопок (callback_data вида ask:{index}).
+   * inline-кнопок (callback_data вида ask:{id} — slug записи справки).
    *
    * Auth: заголовок x-telegram-bot-api-secret-token должен совпасть с
    * TELEGRAM_WEBHOOK_SECRET — иначе 401. Всегда возвращает 2xx после обработки,

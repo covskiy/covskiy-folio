@@ -76,17 +76,18 @@ function makeHarness(options: HarnessOptions = {}): Harness {
     return next <= (options.rateLimitMax ?? Number.POSITIVE_INFINITY);
   });
 
+  // Дефолтная фикстура: первая запись без пометки chip — позиция в массиве
+  // не управляет чипсами; четвёртая пометка проверяет лимит срезом.
+  const DEFAULT_ENTRIES: KnowledgeItem[] = [
+    { id: "intro", title: "Не чипс", text: "первая запись без пометки" },
+    { id: "topic-1", title: "Тема 1", text: "текст 1", chip: true },
+    { id: "topic-2", title: "Тема 2", text: "текст 2", chip: true },
+    { id: "topic-3", title: "Тема 3", text: "текст 3", chip: true },
+    { id: "topic-4", title: "Тема 4", text: "текст 4", chip: true },
+  ];
+
   const knowledge = {
-    load: vi.fn(() =>
-      options.noKnowledge
-        ? null
-        : (options.entries ?? [
-            { title: "Тема 1", text: "текст 1" },
-            { title: "Тема 2", text: "текст 2" },
-            { title: "Тема 3", text: "текст 3" },
-            { title: "Тема 4", text: "текст 4" },
-          ]),
-    ),
+    load: vi.fn(() => (options.noKnowledge ? null : (options.entries ?? DEFAULT_ENTRIES))),
   };
 
   const handle = createWebChatHandler({ store, brain, limit, knowledge });
@@ -98,7 +99,7 @@ afterEach(() => {
 });
 
 describe("handleWebChat: GET", () => {
-  it("возвращает service и первые 3 чипса из справки (фикстура из 4 тем — срез проверен)", async () => {
+  it("возвращает чипсы из помеченных chip записей: позиция в массиве не важна, лимит 3", async () => {
     const { handle } = makeHarness();
     const res = await handle(new Request(URL));
     expect(res.status).toBe(200);
