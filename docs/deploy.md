@@ -92,7 +92,8 @@ curl -X POST https://covskiy-folio.vercel.app/api/telegram-setup \
 - `https://<project>.vercel.app/` — открывается сайт; чат в правом нижнем углу
   отвечает (бейдж «офлайн-справка», если LLM ещё не настроен).
 - `https://<project>.vercel.app/api/chat` (GET) →
-  `{"ok":true,"service":"webchat","chips":[…]}` (chips — первые 3 заголовка справки).
+  `{"ok":true,"service":"webchat","chips":[…]}` (chips — темы, помеченные
+  `chip: true` в справке).
 - Написать боту в Telegram `/start` → приветствие; вопрос → ответ.
 - Логи функции: `npx vercel logs <deployment-url>` или дашборд → Observability.
 

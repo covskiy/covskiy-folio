@@ -28,7 +28,7 @@ llama.cpp. Архитектурные «почему» (зачем одна фу
 | Запустить локальную разработку                   | Терминал 1: `npm run dev:function` (порт 3000); терминал 2: `npm run dev` (vite, 5173) — раздел [7](#7-локальная-разработка-базовый-вариант) |
 | Прогнать тесты                                   | `npm run test` (или `npm run test:watch` — следить за изменениями)                                                                           |
 | Проверить типы / линтер / формат                 | `npm run typecheck` / `npm run lint` / `npm run format:check` (форматировать: `npm run format`)                                              |
-| Поменять справку бота                            | `bot/brain/knowledge.json` (массив `{title, text}`) — раздел [5](#5-правки-контента-рецепты)                                                 |
+| Поменять справку бота                            | `bot/brain/knowledge.json` (массив `{id, title, text, chip?, about?}`) — раздел [5](#5-правки-контента-рецепты)                              |
 | Поменять тон/правила ответов                     | `bot/brain/prompts/00-persona.md` (кто бот) и `bot/brain/prompts/10-rules.md` (как отвечать)                                                 |
 | Сменить модель / провайдера LLM                  | env `LLM_BASE_URL` + `LLM_MODEL` (и `LLM_API_KEY`), затем Redeploy — рецепт [5.4](#54-сменить-модель-или-провайдера)                         |
 | Посмотреть промт на проде                        | `GET /api/telegram-setup?section=prompt` с секрет-заголовком — раздел [9.1](#91-админ-маршрут-apitelegram-setup)                             |
@@ -437,7 +437,8 @@ npm run dev        # открыть http://localhost:5173
    --module nodenext`). Рантайм — нативный Node-лоадер, как на Vercel, поэтому
    забытые `.js`-расширения в импортах ловятся локально.
 3. **контент**: копирует в артефакт `bot/brain/knowledge.json` и `bot/brain/prompts/` —
-   tsc за собой json/md не тянет, без копии `prompt.ts` упал бы с `ENOENT`.
+   tsc за собой json/md не тянет, без копии упали бы с `ENOENT` читающие их
+   `knowledge.ts` (json) и `prompt.ts` (md).
 4. **сервер**: поднимает `node:http` на `127.0.0.1:3000` (переопределяется env
    `DEV_FUNCTION_PORT`) и на каждый запрос конвертирует node req ↔ Request,
    зовёт `default.fetch`, возвращает Response. Ошибка обработчика — 500 и лог
@@ -448,7 +449,7 @@ npm run dev        # открыть http://localhost:5173
 ```bash
 # чипсы — GET
 curl http://127.0.0.1:3000/api/chat
-# {"ok":true,"service":"webchat","chips":[{"title":"Кто я"},…]}
+# {"ok":true,"service":"webchat","chips":[{"title":"Услуги"},…]}
 
 # вопрос — POST (без LLM ожидаем mode:"dumb")
 curl -X POST http://127.0.0.1:3000/api/chat \
@@ -751,7 +752,7 @@ curl -sS -X POST "https://covskiy-folio.vercel.app/api/telegram-setup" \
 | Бот не помнит диалог                 | Redis не настроен/недоступен (fail-open, stateless); TTL 24 ч истёк                                                         | `?section=health` → `redis`; warn-логи `[store]`; руками — раздел [6](#6-память-диалога-посмотреть-и-почистить-руками)                                                                 |
 | Telegram молчит                      | Вебхук снят/смотрит не туда; секрет не совпадает (401); функция падает                                                      | `GET /api/telegram-setup` (getWebhookInfo) → [telegram-webhook-runbook.md](telegram-webhook-runbook.md) → перерегистрировать POST-ом; после смены `TELEGRAM_WEBHOOK_SECRET` — Redeploy |
 | Кнопки в Telegram не нажимаются      | Вебхук зарегистрирован без `allowed_updates: ["message","callback_query"]` (старая регистрация) — callback_query не доходит | Перерегистрировать: `POST /api/telegram-setup` — он выставит правильный список; проверить `getWebhookInfo`                                                                             |
-| Чипсы пустые                         | `fetchChips()` молча получил не-2xx; справка пуста/первые 3 элемента пусты                                                  | `curl https://…/api/chat` — есть ли `chips`; проверить `bot/brain/knowledge.json`                                                                                                      |
+| Чипсы пустые                         | `fetchChips()` молча получил не-2xx; справка недоступна или нет пометок `chip`                                              | `curl https://…/api/chat` — есть ли `chips`; проверить `bot/brain/knowledge.json` (пометки `chip`) и логи `[knowledge]`                                                                |
 | 500 на `/api/*`                      | `ERR_MODULE_NOT_FOUND`: забыли `.js` в относительном импорте `api/`/`bot/`                                                  | См. ниже. Локально ловится только `npm run dev:function` (нативный лоадер) — vite/vitest/tsc расширение прощают                                                                        |
 | «Промт не поменялся» после правки md | Кэш тёплого инстанса; либо файл не уехал в артефакт                                                                         | Проверить `?section=prompt`; если старое — само пройдёт; если ENOENT — [5.3](#53-изменить-структуру-промта--добавить-файл-часть)                                                       |
 
@@ -785,13 +786,16 @@ npm run test         # один прогон (vitest run)
 npm run test:watch   # следить за изменениями
 ```
 
-Сеть в тестах не используется: глобальный `fetch` подменяется через
-`vi.stubGlobal` (LLM, Telegram Bot API и Upstash — моки), env — через
-`vi.stubEnv`. Для Upstash есть образцовый стаб `stubUpstash` в
-`bot/tests/store.test.ts`: он парсит JSON-массив команды из тела POST и возвращает
-заготовленный Response — именно так проверяется REST-протокол store.
+Сеть в тестах не используется — двумя способами. Обработчики и «мозг» принимают
+зависимости через фабрики-инъекции: тесты подставляют явные фейки store/brain/tg/
+лимитера/справки вместо стабов. Транспорты, дотягивающиеся до глобального `fetch`
+(llm, redis-rest), подменяются `vi.stubGlobal`/`fetchImpl`. env — через
+`vi.stubEnv`, роутер `api/bot.ts` — через `vi.mock` обработчиков. Для Upstash
+есть образцовый стаб `stubUpstash` в `bot/tests/store.test.ts`: он парсит
+JSON-массив команды из тела POST и возвращает заготовленный Response — именно
+так проверяется REST-протокол store.
 
-Покрытие — 150 тестов в 10 файлах (`bot/tests/`):
+Покрытие — 185 тестов в 13 файлах (`bot/tests/`):
 
 | Файл                                 | Сколько | Что покрывает                                                                                                                                                |
 | ------------------------------------ | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -800,16 +804,20 @@ npm run test:watch   # следить за изменениями
 | `bot/tests/log.test.ts`              | 8       | Порог из LOG_LEVEL (в т.ч. мусор → warn), warnThrottled (интервал, ключи, независимые инстансы), дефолтный log через vi.stubEnv                              |
 | `bot/tests/redis-rest.test.ts`       | 19      | Транспорт Upstash REST: command/pipeline, Bearer из токена, fail-open (null + warn), throttle-ключи, резолв deps на вызов                                    |
 | `bot/tests/store.test.ts`            | 28      | Домен истории: ключи `webKey`/`tgKey`, TTL-константа, капы записи, парсинг битой истории, дедупликация, incrCounter, ping, фабрика                           |
-| `bot/tests/brain.test.ts`            | 6       | payload в LLM (system+история+вопрос), ошибка транспорта → dumb, dumb-поиск                                                                                  |
-| `bot/tests/webchat.test.ts`          | 15      | GET-чипсы, валидация sessionId/text (включая границу 2000), поток история→LLM→append, fail-open                                                              |
-| `bot/tests/telegram-webhook.test.ts` | 23      | секрет-заголовок, команды (и то, что они не пишут историю), свободный текст, callback `ask:{n}`, 2xx при ошибках                                             |
-| `bot/tests/telegram-admin.test.ts`   | 12      | 404 без секрета, health/prompt/вебхук по `section`, POST setWebhook, 502 при ошибке Telegram                                                                 |
-| `bot/tests/api-router.test.ts`       | 4       | роутинг `api/bot.ts` по pathname и 404 на неизвестный путь                                                                                                   |
+| `bot/tests/knowledge.test.ts`        | 15      | Безопасное чтение (кэш исхода, null при битом JSON), валидация формы (title/text, slug id, дубликаты, пометки chip/about), `uiTopics`, смоук реального JSON  |
+| `bot/tests/prompt.test.ts`           | 6       | Сборка на фикстурных md, контракт плейсхолдера (ровно один — иначе бросок с причиной), смоук реальных md                                                     |
+| `bot/tests/brain.test.ts`            | 8       | payload в LLM (system+история+вопрос), ошибка транспорта → dumb на фикстуре справки, справка недоступна → безопасный ответ (не бросает)                      |
+| `bot/tests/webchat.test.ts`          | 16      | GET-чипсы (`uiTopics`, недоступная справка → 200 с пустым списком), валидация sessionId/text (включая границу 2000), поток история→LLM→append, fail-open     |
+| `bot/tests/telegram-webhook.test.ts` | 28      | секрет-заголовок, команды (и то, что они не пишут историю), кнопки `ask:{id}` и ветки деградации, свободный текст, 2xx при ошибках                           |
+| `bot/tests/telegram-api.test.ts`     | 4       | Транспорт Bot API: резка длинных сообщений, retry_after в тексте ошибки, разбор ok:false                                                                     |
+| `bot/tests/telegram-admin.test.ts`   | 13      | 404 без секрета, health/prompt/вебхук по `section` (справка недоступна → 502), POST setWebhook, 502 при ошибке Telegram                                      |
+| `bot/tests/api-router.test.ts`       | 5       | роутинг `api/bot.ts` по pathname, 404 на неизвестный путь, бросок обработчика → контрактный 500 с записью в лог                                              |
 
 Добавить тест под свой сценарий: открой ближайший по теме файл, скопируй
 соседний `it(...)` и замени стаб/ассерты. Для store-сценариев бери `stubUpstash`
-из `bot/tests/store.test.ts`, для brain/webhook — их аналоги с `vi.stubGlobal("fetch", …)`
-прямо в файле. Тесты идут в pre-commit, так что без них коммит не пройдёт.
+из `bot/tests/store.test.ts`; для brain/webhook/admin — харнессы `makeHarness`
+с инъекцией фейков; для знаний/промта — `makeKnowledge`/`fixtureRead` с инъекцией
+чтения файлов. Тесты идут в pre-commit, так что без них коммит не пройдёт.
 
 Полный набор перед коммитом (husky прогоняет сам, но можно и руками):
 

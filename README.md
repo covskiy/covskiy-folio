@@ -34,11 +34,12 @@ covskiy-folio/
 │  ├─ telegram-api.ts                       # обёртка Bot API (sendMessage и др.) на fetch
 │  ├─ brain/                                # «мозг» + контент
 │  │  ├─ brain.ts                           # answer(): LLM (env LLM_TIMEOUT_MS, дефолт 15 c) → dumb
-│  │  ├─ prompt.ts                          # сборщик system prompt (md + knowledge.json)
+│  │  ├─ knowledge.ts                       # хранилище справки: безопасное чтение, uiTopics()
+│  │  ├─ prompt.ts                          # сборщик system prompt (md-разделы + справка)
 │  │  ├─ knowledge.json                     # ★ СПРАВКА «мозга» — редактируй здесь
 │  │  └─ prompts/                           # разделы system prompt (persona, rules, knowledge)
 │  ├─ store.ts                              # история диалогов: Upstash Redis REST, fail-open
-│  ├─ tests/                                # unit-тесты (Vitest): brain, store, webchat, webhook, admin, роутер
+│  ├─ tests/                                # unit-тесты (Vitest): brain, знания, промт, store, webchat, webhook, admin, роутер
 │  └─ dev/
 │     └─ dev-function.mjs                   # dev-адаптер (замена vercel dev) + заглушка Upstash, не деплоится
 ├─ api/
@@ -106,7 +107,9 @@ Conventional Commits (`feat:`, `fix:`, `docs:`, `chore:`, …) — провер�
 
 ## Обновление справки
 
-Справка — [`bot/brain/knowledge.json`](bot/brain/knowledge.json) (массив `{title, text}`),
+Справка — [`bot/brain/knowledge.json`](bot/brain/knowledge.json) (массив
+`{id, title, text, chip?, about?}` — контракт полей в [docs/manual.md](docs/manual.md),
+раздел «Правки контента»),
 system prompt — [`bot/brain/prompts/`](bot/brain/prompts). Поменял текст → `git push` →
 автодеплой → и сайт, и бот отвечают по-новому. История диалогов живёт в
 Upstash Redis и на контент не влияет: она истечёт по TTL сама (24 часа) или

@@ -118,7 +118,8 @@ npm run dev                      # открыть http://localhost:5173
    нативным tsc — та же нативная ESM-загрузка, что и на Vercel, ловит забытые
    `.js`-расширения;
 2. копирует в скомпилированный `bot/` контент — `knowledge.json` и `prompts/`
-   (tsc за собой json/md не тянет, без копии `prompt.ts` упадёт ENOENT);
+   (tsc за собой json/md не тянет, без копии упадут с ENOENT читающие их
+   `knowledge.ts` и `prompt.ts`);
 3. подхватывает `.env.local`, если он есть (уже выставленные переменные не
    перекрывает); нет файла — просто пустые env (сработает fail-open store /
    dumb-режим brain);
