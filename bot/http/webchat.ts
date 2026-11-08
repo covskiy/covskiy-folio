@@ -17,8 +17,11 @@ const MAX_TEXT_LENGTH = 2_000;
 // поэтому чужой Origin = запрос со сторонней страницы. curl Origin не ставит
 // вовсе — его ловит rate-limit, поэтому отсутствие заголовка пропускаем.
 // Разрешённый origin выводится из request.url: совпадает и на прод-домене,
-// и на preview-деплоях, и в локальных dev-режимах (vite-прокси не переписывает
-// Host, vercel dev раздаёт сайт и /api с одного origin).
+// и на preview-деплоях, и в локальных dev-режимах — vite-прокси должен
+// сохранять клиентский Host (в vite.config.ts задано changeOrigin: false:
+// шорткат-форма прокси молча форсирует changeOrigin: true и переписывает
+// Host на таргет, что ломало все браузерные POST локально), vercel dev
+// раздаёт сайт и /api с одного origin.
 function sameOrigin(request: Request): boolean {
   const origin = request.headers.get("origin");
   return !origin || origin === new URL(request.url).origin;

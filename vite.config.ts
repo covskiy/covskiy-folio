@@ -23,6 +23,15 @@ export default defineConfig({
     // vercel:3000 → vite → vercel:3000: заголовки x-vercel-* растут с каждым
     // кругом до 431, POST с телом роняет обвязку (read ECONNRESET).
     // PORT — маркер «vite заспавнен vercel dev».
-    proxy: process.env.PORT ? undefined : { "/api": "http://127.0.0.1:3000" },
+    //
+    // Форма объекта с changeOrigin: false обязательна: шорткат-форма
+    // (строка-таргет) молча форсирует changeOrigin: true (vite proxyMiddleware),
+    // и Host запроса переписывается на 127.0.0.1:3000. А sameOrigin-стена
+    // вебчата сравнивает Origin с origin request.url, который dev-адаптер
+    // собирает из Host: с переписанным Host любой браузерный POST локально
+    // получал 403 «Запрос с чужого источника» (curl без Origin не ловился).
+    proxy: process.env.PORT
+      ? undefined
+      : { "/api": { target: "http://127.0.0.1:3000", changeOrigin: false } },
   },
 });
