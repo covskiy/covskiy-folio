@@ -159,7 +159,15 @@ async function readBody(req) {
 }
 
 async function callHandler(handler, req) {
-  const url = `http://127.0.0.1:${PORT}${req.url}`;
+  // URL собирается из Host-заголовка, а не захардкоженного адреса: sameOrigin
+  // в webchat сравнивает Origin запроса с origin request.url. Браузерный POST
+  // идёт через vite-прокси с Origin http://localhost:5173, и прокси Host не
+  // переписывает (changeOrigin не включён) — только URL с этим Host даёт
+  // совпадение. Хардкод 127.0.0.1:3000 делал любой браузерный POST локально
+  // «чужим источником» (403), при этом curl без Origin проходил — потому
+  // и не ловилось. Фолбэк на прямой адрес — на случай запроса без Host.
+  const host = req.headers.host ?? `127.0.0.1:${PORT}`;
+  const url = `http://${host}${req.url}`;
   const headers = new Headers();
   for (const [name, value] of Object.entries(req.headers)) {
     if (typeof value === "string") headers.set(name, value);
