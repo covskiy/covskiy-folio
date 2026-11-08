@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createTelegramWebhookHandler } from "../http/telegram-webhook";
+import type { KnowledgeItem } from "../brain/knowledge";
 import type { ChatMessage } from "../store";
 import type { Logger } from "../log";
 import type { TgInlineKeyboardMarkup, TgMessage } from "../telegram-api";
@@ -7,6 +8,13 @@ import type { TgInlineKeyboardMarkup, TgMessage } from "../telegram-api";
 const SECRET = "test-secret";
 const URL = "http://localhost/api/telegram";
 const SECRET_HEADER = { "x-telegram-bot-api-secret-token": SECRET };
+
+/** Фикстура справки: маркеры «Услуги»/«Стоимость»/«Константин Ковский» держат ассерты команд. */
+const KNOWLEDGE_ENTRIES: KnowledgeItem[] = [
+  { title: "Услуги", text: "Пять направлений: сайты, боты." },
+  { title: "Стоимость", text: "Оценка под конкретную задачу." },
+  { title: "Кто я", text: "Константин Ковский — тестовая справка." },
+];
 
 function updateWithText(text: string, updateId?: number): Request {
   return new Request(URL, {
@@ -44,6 +52,10 @@ interface HarnessOptions {
   deadStore?: boolean;
   /** Если задан: первая sendMessage с таким текстом бросает (проверки порядка «отправить → записать» и ретрая). */
   replySendFailsText?: string;
+  /** Записи справки вместо фикстуры (для проверок fallback'а /about). */
+  entries?: KnowledgeItem[];
+  /** Справка недоступна (load() → null). */
+  noKnowledge?: boolean;
 }
 
 interface Harness {
@@ -67,6 +79,7 @@ interface Harness {
     editMessageText: ReturnType<typeof vi.fn>;
   };
   limit: ReturnType<typeof vi.fn>;
+  knowledge: { load: ReturnType<typeof vi.fn> };
   log: Logger;
 }
 
@@ -163,8 +176,12 @@ function makeHarness(options: HarnessOptions = {}): Harness {
     warnThrottled: vi.fn(),
   };
 
-  const handle = createTelegramWebhookHandler({ store, brain, tg, log, limit });
-  return { handle, events, history, seen, store, brain, tg, limit, log };
+  const knowledge = {
+    load: vi.fn(() => (options.noKnowledge ? null : (options.entries ?? KNOWLEDGE_ENTRIES))),
+  };
+
+  const handle = createTelegramWebhookHandler({ store, brain, tg, log, limit, knowledge });
+  return { handle, events, history, seen, store, brain, tg, limit, knowledge, log };
 }
 
 /** Последняя отправка sendMessage: [chatId, text, replyMarkup?]. */
@@ -248,6 +265,44 @@ describe("handleTelegramWebhook", () => {
     expect(lastSend(tg)[1]).toContain("Константин Ковский");
   });
 
+  it("в справке нет «Кто я» → /about отвечает первой записью (позиционный fallback)", async () => {
+    vi.stubEnv("TELEGRAM_WEBHOOK_SECRET", SECRET);
+    const { handle, tg } = makeHarness({
+      entries: [
+        { title: "Услуги", text: "Текст про услуги" },
+        { title: "Стоимость", text: "Текст про стоимость" },
+      ],
+    });
+
+    await handle(updateWithText("/about"));
+
+    expect(lastSend(tg)[1]).toContain("Текст про услуги");
+  });
+
+  it("справка недоступна: /start → приветствие без клавиатуры, а не «неполадки»", async () => {
+    vi.stubEnv("TELEGRAM_WEBHOOK_SECRET", SECRET);
+    const { handle, tg } = makeHarness({ noKnowledge: true });
+
+    const res = await handle(updateWithText("/start"));
+
+    expect(res.status).toBe(200);
+    expect(tg.sendMessage).toHaveBeenCalledTimes(1);
+    const [chatId, text, keyboard] = lastSend(tg);
+    expect(chatId).toBe(42);
+    expect(text).toContain("Привет");
+    expect(keyboard).toBeUndefined();
+  });
+
+  it("справка недоступна: /about → осмысленная заглушка, а не «неполадки»", async () => {
+    vi.stubEnv("TELEGRAM_WEBHOOK_SECRET", SECRET);
+    const { handle, tg } = makeHarness({ noKnowledge: true });
+
+    await handle(updateWithText("/about"));
+
+    expect(tg.sendMessage).toHaveBeenCalledTimes(1);
+    expect(lastSend(tg)[1]).toContain("Информация о владельце пока не заполнена");
+  });
+
   it("неизвестная команда → подсказка вызвать /help", async () => {
     vi.stubEnv("TELEGRAM_WEBHOOK_SECRET", SECRET);
     const { handle, tg } = makeHarness();
@@ -310,6 +365,18 @@ describe("handleTelegramWebhook", () => {
 
     await handle(updateWithCallback("ask:999"));
 
+    expect(tg.answerCallbackQuery).toHaveBeenCalledTimes(1);
+    expect(tg.answerCallbackQuery).toHaveBeenCalledWith("cbq-1", expect.any(String));
+    expect(brain.answer).not.toHaveBeenCalled();
+  });
+
+  it("справка недоступна: кнопка → «кнопка устарела», а не молча погасший спиннер", async () => {
+    vi.stubEnv("TELEGRAM_WEBHOOK_SECRET", SECRET);
+    const { handle, tg, brain } = makeHarness({ noKnowledge: true });
+
+    const res = await handle(updateWithCallback("ask:1"));
+
+    expect(res.status).toBe(200);
     expect(tg.answerCallbackQuery).toHaveBeenCalledTimes(1);
     expect(tg.answerCallbackQuery).toHaveBeenCalledWith("cbq-1", expect.any(String));
     expect(brain.answer).not.toHaveBeenCalled();

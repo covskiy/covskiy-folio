@@ -4,13 +4,18 @@ import { createConfig } from "../config";
 import { createLlm, type LlmPing } from "../llm";
 import { createStore, type RedisPing, type Store } from "../store";
 import { createTelegramApi, type TelegramApi, type TgWebhookInfo } from "../telegram-api";
-import { systemPrompt } from "../brain/prompt";
+import type { KnowledgeItem } from "../brain/knowledge";
 import type { Logger } from "../log";
 
 const SECRET = "test-secret";
 const SETUP_URL = "http://localhost/api/telegram-setup";
 const HEALTH_URL = `${SETUP_URL}?section=health`;
 const PROMPT_URL = `${SETUP_URL}?section=prompt`;
+
+/** Фикстура справки: маркеры промт-теста. */
+const PROMPT_ENTRIES: KnowledgeItem[] = [
+  { title: "Тема-фикстура", text: "Текст-фикстура справки" },
+];
 
 /** Ответ Bot API на getWebhookInfo (фикстура для пункта telegram в health). */
 const WEBHOOK_RESULT: TgWebhookInfo = {
@@ -35,6 +40,8 @@ interface HarnessOptions {
   tgError?: string;
   llmPing?: LlmPing;
   redisPing?: RedisPing;
+  /** Справка недоступна (load() → null). */
+  noKnowledge?: boolean;
 }
 
 interface Harness {
@@ -45,6 +52,7 @@ interface Harness {
   };
   llm: { ping: ReturnType<typeof vi.fn> };
   store: { ping: ReturnType<typeof vi.fn> };
+  knowledge: { load: ReturnType<typeof vi.fn> };
 }
 
 /**
@@ -80,8 +88,11 @@ function makeHarness(options: HarnessOptions = {}): Harness {
       return true;
     }),
   };
-  const handle = createTelegramAdminHandler({ config, llm, tg, store, log: silentLog });
-  return { handle, tg, llm, store };
+  const knowledge = {
+    load: vi.fn(() => (options.noKnowledge ? null : PROMPT_ENTRIES)),
+  };
+  const handle = createTelegramAdminHandler({ config, llm, tg, store, log: silentLog, knowledge });
+  return { handle, tg, llm, store, knowledge };
 }
 
 afterEach(() => {
@@ -190,13 +201,27 @@ describe("handleTelegramAdmin: разделы health и prompt", () => {
     }
   });
 
-  it("prompt → собранный systemPrompt целиком", async () => {
+  it("prompt → собранный systemPrompt с секцией справки из инъекции", async () => {
     const { handle } = makeHarness({ secret: SECRET });
+
     const res = await handle(adminRequest(PROMPT_URL));
+
     expect(res.status).toBe(200);
     const body = (await res.json()) as { ok: boolean; prompt: string };
     expect(body.ok).toBe(true);
-    expect(body.prompt).toBe(systemPrompt());
+    // Фикстура прошла через knowledge → systemPrompt: секция справки на месте
+    expect(body.prompt).toContain("## Тема-фикстура");
+    expect(body.prompt).toContain("Текст-фикстура справки");
+    expect(body.prompt).not.toContain("{{KNOWLEDGE}}");
+  });
+
+  it("справка недоступна: prompt → 502 с диагностируемой ошибкой, а не промт без секции", async () => {
+    const { handle } = makeHarness({ secret: SECRET, noKnowledge: true });
+
+    const res = await handle(adminRequest(PROMPT_URL));
+
+    expect(res.status).toBe(502);
+    await expect(res.json()).resolves.toMatchObject({ ok: false, error: expect.any(String) });
   });
 
   it("health: ошибка одного пункта не роняет остальные", async () => {
@@ -220,6 +245,7 @@ describe("handleTelegramAdmin: разделы health и prompt", () => {
       tg,
       store,
       log: silentLog,
+      knowledge: { load: () => PROMPT_ENTRIES },
     });
 
     const res = await handle(adminRequest(HEALTH_URL));
@@ -258,6 +284,7 @@ describe("handleTelegramAdmin: разделы health и prompt", () => {
       tg,
       store,
       log: silentLog,
+      knowledge: { load: () => PROMPT_ENTRIES },
     });
 
     const res = await handle(adminRequest(HEALTH_URL));

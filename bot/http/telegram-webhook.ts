@@ -3,7 +3,7 @@
 import { config } from "../config.js";
 import { log as rootLog, type Logger } from "../log.js";
 import { answer, type Brain } from "../brain/brain.js";
-import { knowledgeEntries } from "../brain/knowledge.js";
+import { knowledge as rootKnowledge, type KnowledgeStore } from "../brain/knowledge.js";
 import { hitRateLimit } from "../rate-limit.js";
 import {
   appendHistory,
@@ -87,6 +87,8 @@ export interface TelegramWebhookHandlerDeps {
   log: Logger;
   /** Лимитер по бакету `tg:{chatId}`; true — вопрос в пределах лимита. */
   limit: (bucket: string) => Promise<boolean>;
+  /** Источник справки: кнопки /start, /about и восстановление вопроса кнопки. */
+  knowledge: Pick<KnowledgeStore, "load">;
 }
 
 /**
@@ -98,12 +100,16 @@ export interface TelegramWebhookHandlerDeps {
  * @returns Обработчик handleTelegramWebhook(request).
  */
 export function createTelegramWebhookHandler(deps: TelegramWebhookHandlerDeps) {
-  const { store, brain, tg, log, limit } = deps;
+  const { store, brain, tg, log, limit, knowledge } = deps;
 
   // callback_data ограничен 64 байтами, поэтому кнопка несёт только индекс,
   // а вопрос восстанавливается из справки по номеру (те же темы, что чипсы сайта).
-  function startKeyboard(): TgInlineKeyboardMarkup {
-    const buttons = knowledgeEntries()
+  // Справка недоступна или пуста → undefined: /start уходит приветствием без
+  // кнопок — интерфейсная команда не должна превращаться в «технические неполадки».
+  function startKeyboard(): TgInlineKeyboardMarkup | undefined {
+    const entries = knowledge.load();
+    if (!entries?.length) return undefined;
+    const buttons = entries
       .slice(0, START_BUTTONS_COUNT)
       .map((item, index) => ({ text: item.title, callback_data: `ask:${index}` }));
     return { inline_keyboard: buttons.map((button) => [button]) };
@@ -147,11 +153,11 @@ export function createTelegramWebhookHandler(deps: TelegramWebhookHandlerDeps) {
 
   // /about берём из справки: элемент с заголовком «Кто я». Заголовок может
   // переименовать сам владелец (контент правится в knowledge.json без правки
-  // кода), поэтому fallback — первый элемент: команда обязана осмысленно
-  // отвечать при любой правке контента.
+  // кода), поэтому fallback — первый элемент. Недоступная или пустая справка —
+  // осмысленная заглушка: команда интерфейсная, «неполадки» на ней не нужны.
   async function aboutText(): Promise<string> {
-    const entries = knowledgeEntries();
-    const about = entries.find((item) => item.title === "Кто я") ?? entries[0];
+    const entries = knowledge.load();
+    const about = entries?.find((item) => item.title === "Кто я") ?? entries?.[0];
     return about?.text ?? "Информация о владельце пока не заполнена.";
   }
 
@@ -181,9 +187,12 @@ export function createTelegramWebhookHandler(deps: TelegramWebhookHandlerDeps) {
 
   async function handleCallbackQuery(callback: TgCallbackQuery): Promise<void> {
     const match = /^ask:(\d+)$/.exec(callback.data ?? "");
-    const entries = knowledgeEntries();
+    const entries = knowledge.load();
     const index = match ? Number(match[1]) : Number.NaN;
-    const entry = Number.isInteger(index) && index >= 0 ? entries[index] : undefined;
+    // Недоступная справка — тот же путь, что битый формат: «кнопка устарела»,
+    // честный ответ вместо молча погасшего спиннера.
+    const entry =
+      entries !== null && Number.isInteger(index) && index >= 0 ? entries[index] : undefined;
 
     if (!entry) {
       // Битый формат или индекс вне диапазона: гасим спиннер с пояснением,
@@ -332,4 +341,5 @@ export const handleTelegramWebhook = createTelegramWebhookHandler({
   tg: { sendMessage, sendChatAction, answerCallbackQuery, editMessageText },
   log: rootLog,
   limit: hitRateLimit,
+  knowledge: rootKnowledge,
 });

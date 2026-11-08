@@ -1,5 +1,5 @@
 import { answer, type Brain } from "../brain/brain.js";
-import { knowledgeEntries } from "../brain/knowledge.js";
+import { knowledge as rootKnowledge, type KnowledgeStore } from "../brain/knowledge.js";
 import { hitRateLimit } from "../rate-limit.js";
 import { appendHistory, getHistory, webKey, type Store } from "../store.js";
 
@@ -52,6 +52,8 @@ export interface WebChatHandlerDeps {
   brain: Pick<Brain, "answer">;
   /** Лимитер по бакету `web:{ip}`; true — запрос в пределах лимита. */
   limit: (bucket: string) => Promise<boolean>;
+  /** Источник справки для чипсов GET-ветки; null — недоступна (→ пустой список). */
+  knowledge: Pick<KnowledgeStore, "load">;
 }
 
 /**
@@ -62,12 +64,14 @@ export interface WebChatHandlerDeps {
  * @returns Обработчик handleWebChat(request).
  */
 export function createWebChatHandler(deps: WebChatHandlerDeps) {
-  const { store, brain, limit } = deps;
+  const { store, brain, limit, knowledge } = deps;
 
   /**
    * Обработчик /api/chat — бэкенд вебчата. GET отдаёт статус и чипсы-подсказки
-   * (первые 3 элемента справки); POST {sessionId, text} — ответ «мозга» с
-   * серверной историей диалога (достать → спросить → дописать пару вопрос/ответ).
+   * (первые 3 валидированные записи справки; недоступная справка — пустой
+   * список: чипсы декорация, виджет переживает их отсутствие); POST
+   * {sessionId, text} — ответ «мозга» с серверной историей диалога
+   * (достать → спросить → дописать пару вопрос/ответ).
    *
    * Стены против злоупотреблений, до парсинга тела: same-origin (чужая страница
    * не может гонять запросы из браузеров посетителей) → rate-limit по IP
@@ -81,7 +85,9 @@ export function createWebChatHandler(deps: WebChatHandlerDeps) {
    */
   async function handleWebChat(request: Request): Promise<Response> {
     if (request.method === "GET") {
-      const chips = knowledgeEntries()
+      // Чипсы — декорация: недоступная справка даёт пустой список, а не 500
+      // (причина деградации уже в логе хранилища справки).
+      const chips = (knowledge.load() ?? [])
         .slice(0, CHIPS_COUNT)
         .map((item) => ({ title: item.title }));
       return Response.json({ ok: true, service: "webchat", chips });
@@ -152,4 +158,5 @@ export const handleWebChat = createWebChatHandler({
   store: { getHistory, appendHistory },
   brain: { answer },
   limit: hitRateLimit,
+  knowledge: rootKnowledge,
 });

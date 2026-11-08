@@ -4,6 +4,7 @@ import { config, type AppConfig } from "../config.js";
 import { createLlm, type Llm } from "../llm.js";
 import { log as rootLog, type Logger } from "../log.js";
 import { systemPrompt } from "../brain/prompt.js";
+import { knowledge as rootKnowledge, type KnowledgeStore } from "../brain/knowledge.js";
 import { ping as pingRedis, type Store } from "../store.js";
 import {
   getWebhookInfo,
@@ -32,6 +33,8 @@ export interface TelegramAdminHandlerDeps {
   store: Pick<Store, "ping">;
   /** Логгер обработчика (поломка конфигурации, результат setWebhook). */
   log: Logger;
+  /** Источник справки для пункта ?section=prompt. */
+  knowledge: Pick<KnowledgeStore, "load">;
 }
 
 /**
@@ -42,7 +45,7 @@ export interface TelegramAdminHandlerDeps {
  * @returns Обработчик handleTelegramAdmin(request).
  */
 export function createTelegramAdminHandler(deps: TelegramAdminHandlerDeps) {
-  const { config, llm, tg, store, log } = deps;
+  const { config, llm, tg, store, log, knowledge } = deps;
 
   type TelegramHealth = { ok: true; webhook: TgWebhookInfo } | { ok: false; error: string };
 
@@ -108,8 +111,17 @@ export function createTelegramAdminHandler(deps: TelegramAdminHandlerDeps) {
         const section = new URL(request.url).searchParams.get("section");
         if (section === "health") return await healthResponse();
         if (section === "prompt") {
+          const entries = knowledge.load();
+          // Диагностика для владельца: недоступная справка — явная ошибка, а не
+          // промт без секции знаний; причина уже в логе (warn хранилища).
+          if (!entries) {
+            return Response.json(
+              { ok: false, error: "справка недоступна — причина в логах" },
+              { status: 502 },
+            );
+          }
           // Под секретом можно целиком; справка уже внутри промта.
-          return Response.json({ ok: true, prompt: systemPrompt() });
+          return Response.json({ ok: true, prompt: systemPrompt(entries) });
         }
         // Без section — диагностика вебхука.
         const webhook = await tg.getWebhookInfo();
@@ -150,4 +162,5 @@ export const handleTelegramAdmin = createTelegramAdminHandler({
   tg: { getWebhookInfo, setWebhook },
   store: { ping: pingRedis },
   log: rootLog,
+  knowledge: rootKnowledge,
 });

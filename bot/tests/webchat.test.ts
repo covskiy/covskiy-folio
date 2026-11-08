@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createWebChatHandler } from "../http/webchat";
-import { knowledgeEntries } from "../brain/knowledge";
+import type { KnowledgeItem } from "../brain/knowledge";
 import type { ChatMessage } from "../store";
 
 const URL = "http://localhost/api/chat";
@@ -21,6 +21,10 @@ interface HarnessOptions {
   rateLimitMax?: number;
   /** Режим мёртвого Redis: store-фейк ведёт себя fail-open ([] / no-op) — как реальный store при недоступном Redis. */
   deadStore?: boolean;
+  /** Записи справки для GET-чипсов (по умолчанию — фикстура из 4 тем). */
+  entries?: KnowledgeItem[];
+  /** Справка недоступна (load() → null). */
+  noKnowledge?: boolean;
 }
 
 interface Harness {
@@ -32,6 +36,7 @@ interface Harness {
   };
   brain: { answer: ReturnType<typeof vi.fn> };
   limit: ReturnType<typeof vi.fn>;
+  knowledge: { load: ReturnType<typeof vi.fn> };
 }
 
 /**
@@ -71,8 +76,21 @@ function makeHarness(options: HarnessOptions = {}): Harness {
     return next <= (options.rateLimitMax ?? Number.POSITIVE_INFINITY);
   });
 
-  const handle = createWebChatHandler({ store, brain, limit });
-  return { handle, history, store, brain, limit };
+  const knowledge = {
+    load: vi.fn(() =>
+      options.noKnowledge
+        ? null
+        : (options.entries ?? [
+            { title: "Тема 1", text: "текст 1" },
+            { title: "Тема 2", text: "текст 2" },
+            { title: "Тема 3", text: "текст 3" },
+            { title: "Тема 4", text: "текст 4" },
+          ]),
+    ),
+  };
+
+  const handle = createWebChatHandler({ store, brain, limit, knowledge });
+  return { handle, history, store, brain, limit, knowledge };
 }
 
 afterEach(() => {
@@ -80,17 +98,24 @@ afterEach(() => {
 });
 
 describe("handleWebChat: GET", () => {
-  it("возвращает service и первые 3 чипса из справки", async () => {
+  it("возвращает service и первые 3 чипса из справки (фикстура из 4 тем — срез проверен)", async () => {
     const { handle } = makeHarness();
     const res = await handle(new Request(URL));
     expect(res.status).toBe(200);
     await expect(res.json()).resolves.toMatchObject({
       ok: true,
       service: "webchat",
-      chips: knowledgeEntries()
-        .slice(0, 3)
-        .map((item) => ({ title: item.title })),
+      chips: [{ title: "Тема 1" }, { title: "Тема 2" }, { title: "Тема 3" }],
     });
+  });
+
+  it("справка недоступна → 200 с пустым списком чипсов, а не 500", async () => {
+    const { handle } = makeHarness({ noKnowledge: true });
+
+    const res = await handle(new Request(URL));
+
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toMatchObject({ ok: true, chips: [] });
   });
 });
 
