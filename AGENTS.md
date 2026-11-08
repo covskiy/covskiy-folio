@@ -74,8 +74,10 @@ LLM — любой OpenAI-совместимый endpoint (`LLM_BASE_URL`, по 
   или `KV_REST_API_URL/TOKEN` от интеграции Marketplace (store.ts понимает оба
   семейства), `TELEGRAM_BOT_TOKEN`, `TELEGRAM_WEBHOOK_SECRET`; опционально
   `LOG_LEVEL` (дефолт warn — `bot/log.ts`), `LLM_TIMEOUT_MS`/`LLM_MAX_TOKENS`
-  (дефолт 15000/1024 — `bot/brain/brain.ts`), `RATE_LIMIT_MAX`/`RATE_LIMIT_WINDOW_SECONDS`
-  (дефолт 15/3600 — `bot/rate-limit.ts`).
+  (дефолт 15000/1024 — `bot/config.ts`), `RATE_LIMIT_MAX`/`RATE_LIMIT_WINDOW_SECONDS`
+  (дефолт 15/3600 — `bot/rate-limit.ts`), `HISTORY_WINDOW`/`DUMB_SCORE_THRESHOLD`
+  (дефолт 10/0.3 — `bot/brain/brain.ts`), `HISTORY_TTL_SECONDS` (дефолт 86400 —
+  `bot/store.ts`), `TELEGRAM_SEEN_TTL_SECONDS` (дефолт 3600 — `bot/http/telegram-webhook.ts`).
   Env запекается в деплой: после правки переменных — Redeploy; `.env.local` наверх
   не синхронизируется (значения — `vercel env add` или дашборд). Грабли платформы —
   [docs/architecture.md](docs/architecture.md) → «Грабли платформы».

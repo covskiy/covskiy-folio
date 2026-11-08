@@ -1,5 +1,7 @@
 import { createLlm } from "../llm.js";
 import { log as rootLog, type Logger } from "../log.js";
+// Управляющие ручки (окно истории, порог dumb-ответа) — env-слайс brain из config.
+import { config } from "../config.js";
 import { systemPrompt } from "./prompt.js";
 import { rankKnowledge, type SearchHit } from "./search.js";
 import {
@@ -32,11 +34,9 @@ export interface BrainAnswer {
   suggestions?: BrainSuggestion[];
 }
 
-// Порог уверенности dumb-ответа — политика brain, не поиска: rankKnowledge
-// возвращает все попадания, здесь решаем, какое считать ответом, а не подсказкой.
-// 0.3 — стартовое значение под новый скоринг; финальное подбирается корпусом
-// вопросов (см. tasks/04-dumb-mode-search-and-offline-help.md, §2).
-const DUMB_SCORE_THRESHOLD = 0.3;
+// Порог уверенности dumb-ответа — env DUMB_SCORE_THRESHOLD (дефолт 0.3,
+// слайс brain в config.ts). Политика brain, не поиска: rankKnowledge возвращает
+// все попадания, здесь решаем, какое считать ответом, а не подсказкой.
 
 // Максимум подсказок dumb-fallback — рядом с порогом: обе величины из одного
 // решения о качестве dumb-режима (см. tasks/04-dumb-mode-search-and-offline-help.md, §7).
@@ -48,8 +48,8 @@ function formatHit(item: KnowledgeItem): string {
   return `${item.title}\n\n${item.text}`;
 }
 
-// Решение владельца: в промт идёт последние 10 сообщений диалога.
-const HISTORY_WINDOW = 10;
+// Решение владельца: в промт идут последние N сообщений диалога — env
+// HISTORY_WINDOW (дефолт 10, слайс brain в config.ts).
 
 // Два варианта fallback, выбор по наличию подсказок: строка «контакты на
 // странице Контакты» ушла из текста — контакт гарантируется подсказкой
@@ -116,7 +116,7 @@ export function createBrain(deps: BrainDeps = {}) {
   // UI-слой: вопрос и история не нужны, knowledge берётся из замыкания deps.
   function pickSuggestions(hits: SearchHit[], entries: KnowledgeItem[]): BrainSuggestion[] {
     const near = hits
-      .filter((hit) => hit.score < DUMB_SCORE_THRESHOLD)
+      .filter((hit) => hit.score < config.brain.dumbScoreThreshold)
       .slice(0, 2)
       .map((hit) => hit.item);
 
@@ -151,10 +151,12 @@ export function createBrain(deps: BrainDeps = {}) {
    *
    * Env (читает транспорт): LLM_BASE_URL + LLM_MODEL (для llm-режима; без них —
    * сразу dumb), LLM_API_KEY (опциональный Bearer), LLM_TIMEOUT_MS/LLM_MAX_TOKENS.
+   * Свои ручки — env HISTORY_WINDOW (реплик истории в промте) и
+   * DUMB_SCORE_THRESHOLD (порог уверенности dumb-ответа), слайс brain в config.
    *
    * @param {string} question - Текущий вопрос пользователя.
    * @param {ChatMessage[]} [history=[]] - Предыдущие сообщения диалога (уже
-   *   достанные из store); в промт идут последние 10.
+   *   достанные из store); в промт идут последние HISTORY_WINDOW (дефолт 10).
    * @returns {Promise<BrainAnswer>} Текст ответа и mode: 'llm' | 'dumb'; для
    *   dumb-fallback — ещё suggestions (подсказки следующего вопроса), у остальных
    *   режимов поля нет.
@@ -178,7 +180,7 @@ export function createBrain(deps: BrainDeps = {}) {
     function dumbAnswer(entries: KnowledgeItem[]): BrainAnswer {
       const hits: SearchHit[] = search(question, entries);
       const best = hits[0];
-      if (best && best.score >= DUMB_SCORE_THRESHOLD) {
+      if (best && best.score >= config.brain.dumbScoreThreshold) {
         return { text: formatHit(best.item), mode: "dumb" };
       }
       const suggestions = pickSuggestions(hits, entries);
@@ -205,7 +207,9 @@ export function createBrain(deps: BrainDeps = {}) {
     // System-промт ставит brain: транспорт не знает про prompt.ts. В этом try
     // остаются только ошибки транспорта — «LLM недоступен» в catch говорит
     // ровно то, что случилось.
-    const recent = history.slice(-HISTORY_WINDOW).map(({ role, content }) => ({ role, content }));
+    const recent = history
+      .slice(-config.brain.historyWindow)
+      .map(({ role, content }) => ({ role, content }));
     try {
       return {
         text: await llm.chat([

@@ -49,8 +49,9 @@ const CALLBACK_ERROR_TEXT = "Кнопка устарела. Набери /start 
 const RATE_LIMIT_TEXT =
   "Слишком много вопросов подряд — сделай небольшую паузу и попробуй снова 🙂";
 
-// Час — с запасом перекрывает ретраи Telegram по одному апдейту, ключи чистятся сами.
-const SEEN_TTL_SECONDS = 3_600;
+// TTL маркера дедупликации — env TELEGRAM_SEEN_TTL_SECONDS (дефолт 3600,
+// слайс telegram в config.ts): час с запасом перекрывает ретраи Telegram
+// по одному апдейту, ключи чистятся сами.
 
 // Разбор callback_data кнопки /start: ask:{id}. Slug-часть берётся из того же
 // источника формата, что валидирует записи (ID_PATTERN_SOURCE), поэтому кнопка
@@ -301,7 +302,7 @@ export function createTelegramWebhookHandler(deps: TelegramWebhookHandlerDeps) {
         await handleCallbackQuery(update.callback_query);
         // Маркер только после успешной обработки: если она бросила — маркера нет,
         // и повтор дойдёт до LLM.
-        if (seenKey) await store.markSeen(seenKey, SEEN_TTL_SECONDS);
+        if (seenKey) await store.markSeen(seenKey, config.telegram.seenTtlSeconds);
       } catch (error) {
         log.error(
           "telegram-webhook",
@@ -332,7 +333,7 @@ export function createTelegramWebhookHandler(deps: TelegramWebhookHandlerDeps) {
         }
         // Маркер после успешной обработки (см. комментарий к дедупликации выше):
         // бросок dispatch — маркера нет, Telegram повторит и дойдёт до LLM.
-        if (seenKey) await store.markSeen(seenKey, SEEN_TTL_SECONDS);
+        if (seenKey) await store.markSeen(seenKey, config.telegram.seenTtlSeconds);
         log.debug("telegram-webhook", `ответ отправлен в ${message.chat.id}`);
       } catch (error) {
         log.error("telegram-webhook", error instanceof Error ? error.message : String(error));

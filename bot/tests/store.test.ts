@@ -1,11 +1,15 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createConfig } from "../config";
 import type { RedisRest } from "../redis-rest";
-import { createStore, HISTORY_TTL_SECONDS, type StoreDeps } from "../store";
+import { createStore, type StoreDeps } from "../store";
 
 // Домен тестируется через фейковый command/pipeline — без vi.stubGlobal и без
 // сети: transport-контракт (fail-open → null вместо throw) воспроизводится
 // возвращаемым значением фейка, как у реального redis-rest.
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
 
 /** Моки command/pipeline фейкового транспорта. */
 type CommandMock = ReturnType<typeof vi.fn<(command: unknown[]) => Promise<unknown>>>;
@@ -105,7 +109,7 @@ describe("store: история (getHistory / appendHistory / clearHistory)", ()
         { role: "assistant", content: "ответ" },
       ]),
       "EX",
-      String(HISTORY_TTL_SECONDS),
+      "86400",
     ]);
   });
 
@@ -119,7 +123,22 @@ describe("store: история (getHistory / appendHistory / clearHistory)", ()
       "chat:web:abc",
       JSON.stringify([{ role: "user", content: "вопрос" }]),
       "EX",
-      String(HISTORY_TTL_SECONDS),
+      "86400",
+    ]);
+  });
+
+  it("appendHistory: TTL из env HISTORY_TTL_SECONDS доходит до SET", async () => {
+    vi.stubEnv("HISTORY_TTL_SECONDS", "120");
+    const { store, command } = makeStore(() => ok(null));
+
+    await store.appendHistory("chat:web:abc", [{ role: "user", content: "вопрос" }]);
+
+    expect(command).toHaveBeenLastCalledWith([
+      "set",
+      "chat:web:abc",
+      JSON.stringify([{ role: "user", content: "вопрос" }]),
+      "EX",
+      "120",
     ]);
   });
 
@@ -352,7 +371,6 @@ describe("store: фабрика и дефолтный инстанс", () => {
     // убедиться, что переэкспорт жив; сетевые ветки дефолтного инстанса
     // покрывают тесты webchat/telegram-webhook/telegram-admin.
     expect(store.webKey("abc")).toBe("chat:web:abc");
-    expect(store.HISTORY_TTL_SECONDS).toBe(86_400);
     expect(typeof store.appendHistory).toBe("function");
     expect(typeof store.incrCounter).toBe("function");
     expect(typeof store.ping).toBe("function");

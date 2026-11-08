@@ -60,6 +60,8 @@ export interface TelegramSettings {
   webhookSecret?: string;
   /** Корень Bot API (env TELEGRAM_API_ROOT, дефолт — официальный api.telegram.org). */
   apiRoot: string;
+  /** TTL маркера дедупликации апдейтов, секунд (env TELEGRAM_SEEN_TTL_SECONDS, дефолт 3600). */
+  seenTtlSeconds: number;
 }
 
 /** Срез порогов rate-limit: env RATE_LIMIT_MAX / RATE_LIMIT_WINDOW_SECONDS. */
@@ -70,6 +72,21 @@ export interface RateLimitSettings {
   windowSeconds: number;
 }
 
+/** Срез управляющих ручек «мозга»: env HISTORY_WINDOW / DUMB_SCORE_THRESHOLD. */
+export interface BrainSettings {
+  /** Реплик диалога в промте (дефолт 10). */
+  historyWindow: number;
+  /** Порог уверенности dumb-ответа: ниже — fallback с подсказками (дефолт 0.3). */
+  dumbScoreThreshold: number;
+}
+
+/** Срез памяти диалога: env HISTORY_TTL_SECONDS. */
+export interface HistorySettings {
+  /** TTL ключа истории в Redis, секунды; обновляется при каждой записи —
+   *  «скользящее окно» активности (дефолт 86400 = 24 ч). */
+  ttlSeconds: number;
+}
+
 /** Корневой срез конфигурации; каждый слайс — ленивый геттер над env. */
 export interface AppConfig {
   /** null — LLM_BASE_URL или LLM_MODEL отсутствуют. */
@@ -78,6 +95,8 @@ export interface AppConfig {
   readonly redis: RedisSettings | null;
   readonly telegram: TelegramSettings;
   readonly rateLimit: RateLimitSettings;
+  readonly brain: BrainSettings;
+  readonly history: HistorySettings;
   readonly logLevel: LogLevel;
 }
 
@@ -99,6 +118,21 @@ const LLM_MAX_TOKENS_DEFAULT = 1_024;
 // при атаке порог ужесточается из дашборда Vercel + Redeploy, без коммита.
 const RATE_LIMIT_MAX_DEFAULT = 15;
 const RATE_LIMIT_WINDOW_DEFAULT_SECONDS = 3_600;
+
+// Управляющие ручки «мозга»: env HISTORY_WINDOW / DUMB_SCORE_THRESHOLD
+// переопределяют дефолты (10 / 0.3). Окно — баланс расхода токенов и ширины
+// контекста (кап на объём хранимой истории — в store.ts); порог решает, где
+// dumb-ответ сменяется честным fallback с подсказками (tasks/04, §2).
+const HISTORY_WINDOW_DEFAULT = 10;
+const DUMB_SCORE_THRESHOLD_DEFAULT = 0.3;
+
+// TTL истории диалога в Redis; env HISTORY_TTL_SECONDS переопределяет.
+// TTL обновляется при каждой записи, поэтому окно скользящее, а не жёсткое.
+const HISTORY_TTL_DEFAULT_SECONDS = 86_400;
+
+// TTL маркера дедупликации Telegram-апдейтов; env TELEGRAM_SEEN_TTL_SECONDS
+// переопределяет. Час — с запасом поверх ретраев Telegram по одному апдейту.
+const TELEGRAM_SEEN_TTL_DEFAULT_SECONDS = 3_600;
 
 // Корень Bot API: дефолт — официальный api.telegram.org; env-оверрайд
 // TELEGRAM_API_ROOT — только для локального смоука против мока
@@ -168,6 +202,7 @@ function telegramSettings(env: NodeJS.ProcessEnv): TelegramSettings {
     // а не в пустой корень.
     apiRoot:
       withoutTrailingSlashes(str(env, "TELEGRAM_API_ROOT") ?? "") || TELEGRAM_API_ROOT_DEFAULT,
+    seenTtlSeconds: num(env, "TELEGRAM_SEEN_TTL_SECONDS", TELEGRAM_SEEN_TTL_DEFAULT_SECONDS),
   };
 }
 
@@ -176,6 +211,17 @@ function rateLimitSettings(env: NodeJS.ProcessEnv): RateLimitSettings {
     max: num(env, "RATE_LIMIT_MAX", RATE_LIMIT_MAX_DEFAULT),
     windowSeconds: num(env, "RATE_LIMIT_WINDOW_SECONDS", RATE_LIMIT_WINDOW_DEFAULT_SECONDS),
   };
+}
+
+function brainSettings(env: NodeJS.ProcessEnv): BrainSettings {
+  return {
+    historyWindow: num(env, "HISTORY_WINDOW", HISTORY_WINDOW_DEFAULT),
+    dumbScoreThreshold: num(env, "DUMB_SCORE_THRESHOLD", DUMB_SCORE_THRESHOLD_DEFAULT),
+  };
+}
+
+function historySettings(env: NodeJS.ProcessEnv): HistorySettings {
+  return { ttlSeconds: num(env, "HISTORY_TTL_SECONDS", HISTORY_TTL_DEFAULT_SECONDS) };
 }
 
 function logLevelSettings(env: NodeJS.ProcessEnv): LogLevel {
@@ -212,6 +258,12 @@ export function createConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     },
     get rateLimit() {
       return rateLimitSettings(env);
+    },
+    get brain() {
+      return brainSettings(env);
+    },
+    get history() {
+      return historySettings(env);
     },
     get logLevel() {
       return logLevelSettings(env);

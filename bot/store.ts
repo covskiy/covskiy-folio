@@ -26,12 +26,9 @@ export interface ChatMessage {
   content: string;
 }
 
-// Решение владельца: история живёт 24 часа, TTL обновляется при каждой записи,
-// так что «скользящее окно» активности чата.
-/**
- * TTL истории диалога в Redis, секунды (24 часа); обновляется при каждой записи.
- */
-export const HISTORY_TTL_SECONDS = 86_400;
+// Решение владельца: история живёт 24 часа (env HISTORY_TTL_SECONDS, слайс
+// history в config.ts), TTL обновляется при каждой записи, так что
+// «скользящее окно» активности чата.
 
 /**
  * Зависимости хранилища — точки инъекции для тестов; в рантайме createStore()
@@ -83,6 +80,9 @@ export interface RedisPing {
  * @returns Доменные операции над Redis (история, дедупликация, лимитер, ping, ключи).
  */
 export function createStore(deps: StoreDeps = {}) {
+  // Один слайс-источник для домена (TTL истории) и проверки «не настроен»:
+  // инжектированный config в тестах виден и транспорту, и домену одинаково.
+  const cfg = deps.config ?? config;
   // Дефолт — инстанс рантайма; тесты приходят со своим транспортом через deps.
   // Инжектированный config пробрасывается транспорту целиком: транспорт и ping
   // читают ОДИН слайс redis (единый источник истины), без инъекции транспорт
@@ -178,7 +178,7 @@ export function createStore(deps: StoreDeps = {}) {
    * @returns {Promise<RedisPing>} ok/latencyMs при успехе, ok:false + reason при отказе.
    */
   async function ping(): Promise<RedisPing> {
-    if (!(deps.config ?? config).redis) {
+    if (!cfg.redis) {
       return { ok: false, reason: "не настроен: UPSTASH_REDIS_REST_* / KV_REST_API_* отсутствуют" };
     }
     const startedAt = Date.now();
@@ -222,7 +222,8 @@ export function createStore(deps: StoreDeps = {}) {
 
   /**
    * Дописать сообщения в конец истории: достать → дополнить → записать одним SET
-   * с обновлением TTL (24 ч). Пустой список — no-op без обращения к Redis.
+   * с обновлением TTL (env HISTORY_TTL_SECONDS, дефолт 24 ч). Пустой список —
+   * no-op без обращения к Redis.
    * Запись ограничена капами: последние 20 сообщений, каждая реплика не длиннее
    * 4000 символов — раздутая история не забивает free-tier Redis и контекст промта.
    * @param {string} key - Ключ Redis.
@@ -236,7 +237,7 @@ export function createStore(deps: StoreDeps = {}) {
     const capped = [...history, ...messages]
       .map(({ role, content }) => ({ role, content: content.slice(0, HISTORY_MAX_CONTENT_LENGTH) }))
       .slice(-HISTORY_MAX_MESSAGES);
-    await setValue(key, JSON.stringify(capped), HISTORY_TTL_SECONDS);
+    await setValue(key, JSON.stringify(capped), cfg.history.ttlSeconds);
   }
 
   /**

@@ -35,7 +35,7 @@ covskiy-folio/
 │  │  └─ telegram-admin.ts                  # /api/telegram-setup (health, промт, вебхук)
 │  ├─ telegram-api.ts                       # обёртка Bot API (sendMessage и др.) на fetch
 │  ├─ brain/                                # «мозг» + контент
-│  │  ├─ brain.ts                           # answer(): LLM (env LLM_TIMEOUT_MS, дефолт 15 c) → dumb (порог 0.3, подсказки fallback)
+│  │  ├─ brain.ts                           # answer(): LLM (env LLM_TIMEOUT_MS, дефолт 15 c) → dumb (порог env DUMB_SCORE_THRESHOLD, дефолт 0.3; подсказки fallback)
 │  │  ├─ search.ts                          # dumb-поиск: rankKnowledge() — нормализация, стемминг, IDF, keywords
 │  │  ├─ knowledge.ts                       # хранилище справки: безопасное чтение, uiTopics()
 │  │  ├─ help.ts                            # тексты помощи: вебчат (?/help), Telegram /help, запасной

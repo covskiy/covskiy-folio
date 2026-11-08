@@ -84,6 +84,24 @@ describe("answer: LLM-ветка", () => {
     expect(messages[10]).toMatchObject({ content: "сообщение 13" });
     expect(messages[11]).toMatchObject({ role: "user", content: "текущий вопрос" });
   });
+
+  it("HISTORY_WINDOW из env: окно 2 → в chat system + 2 последних + вопрос", async () => {
+    vi.stubEnv("HISTORY_WINDOW", "2");
+    const llm = fakeLlm(async () => "Ок");
+    const { answer: brainAnswer } = createBrain({ llm, knowledge: fakeKnowledge() });
+
+    const history = Array.from({ length: 14 }, (_, i): ChatMessage => ({
+      role: i % 2 === 0 ? "user" : "assistant",
+      content: `сообщение ${i}`,
+    }));
+    await brainAnswer("текущий вопрос", history);
+
+    const messages = (llm.chat as ReturnType<typeof vi.fn>).mock.calls[0][0] as LlmMessage[];
+    expect(messages).toHaveLength(4);
+    expect(messages[1]).toMatchObject({ content: "сообщение 12" });
+    expect(messages[2]).toMatchObject({ content: "сообщение 13" });
+    expect(messages[3]).toMatchObject({ role: "user", content: "текущий вопрос" });
+  });
 });
 
 describe("answer: dumb-режим (fallback)", () => {
@@ -194,6 +212,23 @@ describe("answer: оркестрация search (инъекция)", () => {
     expect(result.text).not.toContain(ITEM.text);
     // Единственный источник подсказок здесь — сам near-miss: contact и chip в
     // фикстуре нет, поэтому список ровно из одного попадания ниже порога
+    expect(result.suggestions).toEqual([{ id: ITEM.id, title: ITEM.title }]);
+  });
+
+  it("порог из env: DUMB_SCORE_THRESHOLD=0.9 переводит score 0.3 в fallback с near-miss-подсказкой", async () => {
+    vi.stubEnv("DUMB_SCORE_THRESHOLD", "0.9");
+    const search = fakeSearch([{ item: ITEM, score: 0.3 }]);
+    const { answer: brainAnswer } = createBrain({
+      llm: brokenLlm(),
+      knowledge: fakeKnowledge(),
+      search,
+    });
+
+    const result = await brainAnswer("как связаться?");
+
+    expect(result.mode).toBe("dumb");
+    expect(result.text).toContain("Не нашёл");
+    // Тот же hit стал near-miss — поведение порога управляется env.
     expect(result.suggestions).toEqual([{ id: ITEM.id, title: ITEM.title }]);
   });
 

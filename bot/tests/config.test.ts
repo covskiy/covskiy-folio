@@ -96,11 +96,12 @@ describe("config: redis", () => {
 });
 
 describe("config: telegram", () => {
-  it("без env: токен/секрет undefined, apiRoot — официальный", () => {
+  it("без env: токен/секрет undefined, apiRoot — официальный, seenTtl — час", () => {
     expect(createConfig({}).telegram).toEqual({
       botToken: undefined,
       webhookSecret: undefined,
       apiRoot: "https://api.telegram.org",
+      seenTtlSeconds: 3_600,
     });
   });
 
@@ -116,6 +117,11 @@ describe("config: telegram", () => {
     });
     expect(cfg.telegram.botToken).toBe("123:abc");
     expect(cfg.telegram.webhookSecret).toBeUndefined();
+  });
+
+  it("TELEGRAM_SEEN_TTL_SECONDS: оверрайд парсится, мусор — дефолт", () => {
+    expect(createConfig({ TELEGRAM_SEEN_TTL_SECONDS: "120" }).telegram.seenTtlSeconds).toBe(120);
+    expect(createConfig({ TELEGRAM_SEEN_TTL_SECONDS: "abc" }).telegram.seenTtlSeconds).toBe(3_600);
   });
 });
 
@@ -136,6 +142,39 @@ describe("config: rateLimit", () => {
         createConfig({ RATE_LIMIT_MAX: bad, RATE_LIMIT_WINDOW_SECONDS: bad }).rateLimit,
       ).toEqual({ max: 15, windowSeconds: 3_600 });
     }
+  });
+});
+
+describe("config: brain", () => {
+  it("без env — дефолты 10/0.3", () => {
+    expect(createConfig({}).brain).toEqual({ historyWindow: 10, dumbScoreThreshold: 0.3 });
+  });
+
+  it("оверрайды парсятся числами, дробный порог проходит", () => {
+    expect(createConfig({ HISTORY_WINDOW: "4", DUMB_SCORE_THRESHOLD: "0.45" }).brain).toEqual({
+      historyWindow: 4,
+      dumbScoreThreshold: 0.45,
+    });
+  });
+
+  it("мусор/ноль/отрицательное — дефолт", () => {
+    for (const bad of ["abc", "0", "-1"]) {
+      expect(createConfig({ HISTORY_WINDOW: bad, DUMB_SCORE_THRESHOLD: bad }).brain).toEqual({
+        historyWindow: 10,
+        dumbScoreThreshold: 0.3,
+      });
+    }
+  });
+});
+
+describe("config: history", () => {
+  it("без env — дефолт 86400 (24 ч)", () => {
+    expect(createConfig({}).history).toEqual({ ttlSeconds: 86_400 });
+  });
+
+  it("оверрайд парсится, мусор — дефолт", () => {
+    expect(createConfig({ HISTORY_TTL_SECONDS: "60" }).history).toEqual({ ttlSeconds: 60 });
+    expect(createConfig({ HISTORY_TTL_SECONDS: "abc" }).history).toEqual({ ttlSeconds: 86_400 });
   });
 });
 

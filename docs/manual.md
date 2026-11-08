@@ -137,7 +137,7 @@ Vercel Function (`api/bot.ts`, роутер по pathname), которая за 
    `chat:web:{sessionId}`. Redis недоступен? `getHistory` вернёт `[]` (fail-open),
    ответ всё равно уйдёт — просто без контекста.
 6. **Мозг.** `bot/brain/brain.ts` → `answer(question, history)`: в LLM уходит payload
-   `{model, messages: [system + последние 10 сообщений (`HISTORY_WINDOW = 10`) + текущий вопрос], temperature: 0.3}`
+   `{model, messages: [system + последние N сообщений (env `HISTORY_WINDOW`, дефолт 10) + текущий вопрос], temperature: 0.3}`
    на `${LLM_BASE_URL}/chat/completions`, таймаут `LLM_TIMEOUT_MS` — env,
    дефолт 15 000 мс.
    Ошибка транспорта → dumb-режим: `rankKnowledge()` из `bot/brain/search.ts`
@@ -364,14 +364,22 @@ Env-переменные (прод — Vercel → Settings → Environment Varia
 Локально то же самое в `.env.local` — вступает в силу при перезапуске
 `npm run dev:function`.
 
-### 5.5 Поменять TTL истории / окно контекста
+### 5.5 Поменять TTL истории / окно контекста / порог dumb-ответа
 
-- TTL: `HISTORY_TTL_SECONDS = 86_400` в `bot/store.ts` (секунды; обновляется при
+Управляющие ручки — env (слайсы brain/history в `bot/config.ts`, дефолты в коде;
+на Vercel после правки — Redeploy):
+
+- TTL истории: `HISTORY_TTL_SECONDS` (секунды; дефолт 86 400, обновляется при
   каждой записи — «скользящее окно» активности).
-- Окно: `HISTORY_WINDOW = 10` в `bot/brain/brain.ts` — сколько последних сообщений
-  диалога уходит в LLM.
+- Окно контекста: `HISTORY_WINDOW` — сколько последних сообщений диалога
+  уходит в LLM (дефолт 10).
+- Порог dumb-ответа: `DUMB_SCORE_THRESHOLD` (дефолт 0.3) — выше строже: чаще
+  честный fallback с подсказками, ниже — чаще уверенный ответ по совпадению.
+- TTL дедупликации Telegram-апдейтов: `TELEGRAM_SEEN_TTL_SECONDS`
+  (дефолт 3600 — час с запасом перекрывает ретраи Telegram).
 
-Обе константы экспортированы и покрыты тестами — после правки прогони `npm run test`.
+Стартовые значения и комментарии — в `.env.example`. После правки прогони
+`npm run test`: сквозные тесты (store/brain) подхватывают env через `vi.stubEnv`.
 
 ### 5.6 Поменять лимит текста вебчата
 
@@ -410,7 +418,7 @@ Env-переменные (прод — Vercel → Settings → Environment Varia
   `chat:tg:{chatId}` (Telegram).
 - Значение — **одна JSON-строка**: массив сообщений `[{"role":"user"|"assistant","content":"…"}, …]`,
   пишется целиком одним SET.
-- TTL: `HISTORY_TTL_SECONDS = 86_400` (24 часа), обновляется при каждой записи.
+- TTL: env `HISTORY_TTL_SECONDS` (дефолт 86 400 = 24 часа), обновляется при каждой записи.
 
 Руками через Upstash REST (команды передаются **JSON-массивом** в теле POST;
 имена переменных зависят от происхождения базы: `UPSTASH_REDIS_REST_URL/TOKEN`
