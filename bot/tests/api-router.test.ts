@@ -14,16 +14,27 @@ const handlers = vi.hoisted(() => {
   };
 });
 
+// Логгер мокается: проверяем запись об ошибке роутера и не сыплем console.error в вывод тестов.
+const logFakes = vi.hoisted(() => ({
+  debug: vi.fn(),
+  info: vi.fn(),
+  warn: vi.fn(),
+  error: vi.fn(),
+  warnThrottled: vi.fn(),
+}));
+
 vi.mock("../http/webchat.js", () => ({ handleWebChat: handlers.webChat }));
 vi.mock("../http/telegram-webhook.js", () => ({
   handleTelegramWebhook: handlers.telegramWebhook,
 }));
 vi.mock("../http/telegram-admin.js", () => ({ handleTelegramAdmin: handlers.telegramAdmin }));
+vi.mock("../log.js", () => ({ log: logFakes }));
 
 beforeEach(() => {
   handlers.webChat.mockClear();
   handlers.telegramWebhook.mockClear();
   handlers.telegramAdmin.mockClear();
+  logFakes.error.mockClear();
 });
 
 describe("роутер api/bot (единая функция)", () => {
@@ -60,5 +71,22 @@ describe("роутер api/bot (единая функция)", () => {
     await expect(res.json()).resolves.toMatchObject({ handler: "admin" });
     expect(handlers.telegramAdmin).toHaveBeenCalledTimes(1);
     expect(handlers.telegramAdmin).toHaveBeenCalledWith(request);
+  });
+
+  it("бросок обработчика → контрактный 500 JSON и запись в лог, а не платформенная ошибка", async () => {
+    handlers.webChat.mockImplementationOnce(async () => {
+      throw new Error("boom");
+    });
+
+    const res = await bot.fetch(new Request("http://localhost/api/chat"));
+
+    expect(res.status).toBe(500);
+    await expect(res.json()).resolves.toEqual({ ok: false, error: "Internal Error" });
+    // Причина — в логе с контекстом пути; тело ответа деталей не раскрывает
+    expect(logFakes.error).toHaveBeenCalledTimes(1);
+    const [scope, message] = logFakes.error.mock.calls[0] as [string, string];
+    expect(scope).toBe("router");
+    expect(message).toContain("/api/chat");
+    expect(message).toContain("boom");
   });
 });
