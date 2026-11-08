@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createWebChatHandler } from "../http/webchat";
+import { HELP_TEXT_WEBCHAT } from "../brain/help";
 import type { KnowledgeItem } from "../brain/knowledge";
 import type { ChatMessage } from "../store";
 
@@ -17,6 +18,10 @@ function post(body: unknown, headers: Record<string, string> = {}): Request {
 interface HarnessOptions {
   /** Ответ fakeBrain. */
   llmText?: string;
+  /** Режим ответа fakeBrain (по умолчанию llm). */
+  mode?: "llm" | "dumb";
+  /** Подсказки dumb-fallback от fakeBrain; не заданы — поля в ответе нет. */
+  suggestions?: Array<{ id: string; title: string }>;
   /** Порог фейкового лимитера на один бакет (по умолчанию — без лимита). */
   rateLimitMax?: number;
   /** Режим мёртвого Redis: store-фейк ведёт себя fail-open ([] / no-op) — как реальный store при недоступном Redis. */
@@ -62,9 +67,14 @@ function makeHarness(options: HarnessOptions = {}): Harness {
       async (
         _question: string,
         _history: ChatMessage[] = [],
-      ): Promise<{ text: string; mode: "llm" }> => ({
+      ): Promise<{
+        text: string;
+        mode: "llm" | "dumb";
+        suggestions?: Array<{ id: string; title: string }>;
+      }> => ({
         text: options.llmText ?? "Ответ",
-        mode: "llm",
+        mode: options.mode ?? "llm",
+        ...(options.suggestions ? { suggestions: options.suggestions } : {}),
       }),
     ),
   };
@@ -99,7 +109,7 @@ afterEach(() => {
 });
 
 describe("handleWebChat: GET", () => {
-  it("возвращает чипсы из помеченных chip записей: позиция в массиве не важна, лимит 3", async () => {
+  it("возвращает чипсы из помеченных chip записей и текст помощи: позиция в массиве не важна, лимит 3", async () => {
     const { handle } = makeHarness();
     const res = await handle(new Request(URL));
     expect(res.status).toBe(200);
@@ -107,16 +117,23 @@ describe("handleWebChat: GET", () => {
       ok: true,
       service: "webchat",
       chips: [{ title: "Тема 1" }, { title: "Тема 2" }, { title: "Тема 3" }],
+      // help — статическая константа brain/help.ts: кнопка «?» не зависит от справки
+      help: HELP_TEXT_WEBCHAT,
     });
   });
 
-  it("справка недоступна → 200 с пустым списком чипсов, а не 500", async () => {
+  it("справка недоступна → 200: чипсы пустые, а help остаётся (не 500)", async () => {
     const { handle } = makeHarness({ noKnowledge: true });
 
     const res = await handle(new Request(URL));
 
     expect(res.status).toBe(200);
-    await expect(res.json()).resolves.toMatchObject({ ok: true, chips: [] });
+    await expect(res.json()).resolves.toEqual({
+      ok: true,
+      service: "webchat",
+      chips: [],
+      help: HELP_TEXT_WEBCHAT,
+    });
   });
 });
 
@@ -158,6 +175,52 @@ describe("handleWebChat: POST", () => {
       text: "Ответ ассистента",
       mode: "llm",
     });
+  });
+
+  it("dumb-fallback с подсказками → suggestions только {title} (без id)", async () => {
+    const { handle } = makeHarness({
+      mode: "dumb",
+      llmText: "Не нашёл точного ответа в справке. 🤔",
+      suggestions: [
+        { id: "contacts", title: "Контакты" },
+        { id: "services", title: "Услуги" },
+        { id: "pricing", title: "Стоимость" },
+      ],
+    });
+
+    const res = await handle(post({ sessionId: SESSION_ID, text: "ракета на марс" }));
+
+    expect(res.status).toBe(200);
+    // toEqual: id клиенту не нужен и в JSON не попадает
+    await expect(res.json()).resolves.toEqual({
+      ok: true,
+      text: "Не нашёл точного ответа в справке. 🤔",
+      mode: "dumb",
+      suggestions: [{ title: "Контакты" }, { title: "Услуги" }, { title: "Стоимость" }],
+    });
+  });
+
+  it("fallback без подсказок → поля suggestions в JSON нет", async () => {
+    const { handle } = makeHarness({ mode: "dumb", llmText: "Не нашёл…" });
+
+    const res = await handle(post({ sessionId: SESSION_ID, text: "ракета на марс" }));
+
+    const data = (await res.json()) as Record<string, unknown>;
+    expect(data).toEqual({ ok: true, text: "Не нашёл…", mode: "dumb" });
+    expect("suggestions" in data).toBe(false);
+  });
+
+  it("LLM-ответ и уверенный dumb-ответ → suggestions нет", async () => {
+    const { handle } = makeHarness({ llmText: "Ответ ассистента" });
+    const llmRes = await handle(post({ sessionId: SESSION_ID, text: "вопрос" }));
+    const llmData = (await llmRes.json()) as Record<string, unknown>;
+    expect("suggestions" in llmData).toBe(false);
+
+    // Уверенный dumb-ответ: brain нашёл запись, но подсказки при нём не прилагает
+    const { handle: dumbHandle } = makeHarness({ mode: "dumb", llmText: "Стоимость\n\n…" });
+    const dumbRes = await dumbHandle(post({ sessionId: SESSION_ID, text: "вопрос" }));
+    const dumbData = (await dumbRes.json()) as Record<string, unknown>;
+    expect("suggestions" in dumbData).toBe(false);
   });
 
   it("вопрос уходит в brain без истории и пара вопрос/ответ сохраняется в store", async () => {

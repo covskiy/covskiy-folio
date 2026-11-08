@@ -1,13 +1,24 @@
 import { createLlm } from "../llm.js";
 import { log as rootLog, type Logger } from "../log.js";
 import { systemPrompt } from "./prompt.js";
+import { rankKnowledge, type SearchHit } from "./search.js";
 import {
   knowledge as rootKnowledge,
+  uiTopics,
   type KnowledgeItem,
   type KnowledgeStore,
 } from "./knowledge.js";
 // Единое определение сообщения диалога живёт в store.ts — дублировать нельзя.
 import type { ChatMessage } from "../store.js";
+
+/**
+ * Подсказка следующего вопроса в dumb-fallback: id нужен Telegram для
+ * callback_data (`ask:{id}`), title — текст кнопки/чипа вебчата.
+ */
+export interface BrainSuggestion {
+  id: string;
+  title: string;
+}
 
 /**
  * Ответ «мозга» — единый формат для вебчата и Telegram.
@@ -17,17 +28,40 @@ export interface BrainAnswer {
   text: string;
   /** 'llm' — ответила нейросеть, 'dumb' — локальный поиск по справке */
   mode: "llm" | "dumb";
+  /** Варианты следующего вопроса; только для dumb-fallback (см. pickSuggestions). */
+  suggestions?: BrainSuggestion[];
 }
 
-const DUMB_SCORE_THRESHOLD = 0.2;
+// Порог уверенности dumb-ответа — политика brain, не поиска: rankKnowledge
+// возвращает все попадания, здесь решаем, какое считать ответом, а не подсказкой.
+// 0.3 — стартовое значение под новый скоринг; финальное подбирается корпусом
+// вопросов (см. tasks/04-dumb-mode-search-and-offline-help.md, §2).
+const DUMB_SCORE_THRESHOLD = 0.3;
+
+// Максимум подсказок dumb-fallback — рядом с порогом: обе величины из одного
+// решения о качестве dumb-режима (см. tasks/04-dumb-mode-search-and-offline-help.md, §7).
+const DUMB_SUGGESTIONS_LIMIT = 3;
+
+// Dumb-ответ начинается с заголовка записи: без него «Пять направлений:…»
+// непонятно, о чём ответ. Plain text: и Telegram, и вебчат рендерят его как есть.
+function formatHit(item: KnowledgeItem): string {
+  return `${item.title}\n\n${item.text}`;
+}
 
 // Решение владельца: в промт идёт последние 10 сообщений диалога.
 const HISTORY_WINDOW = 10;
 
-const FALLBACK_ANSWER = [
+// Два варианта fallback, выбор по наличию подсказок: строка «контакты на
+// странице Контакты» ушла из текста — контакт гарантируется подсказкой
+// (запись с contact: true всегда попадает в suggestions, см. pickSuggestions).
+const FALLBACK_WITH_SUGGESTIONS = [
   "Не нашёл точного ответа в справке. 🤔",
-  "Попробуй спросить иначе или напиши владельцу сайта напрямую — контакты на странице «Контакты».",
+  "Попробуй спросить иначе или выбери тему ниже.",
 ].join("\n");
+
+const FALLBACK_PLAIN = ["Не нашёл точного ответа в справке. 🤔", "Попробуй спросить иначе."].join(
+  "\n",
+);
 
 // Ответ при недоступной справке — это не dumb-fallback «не нашёл»: справка
 // сломана целиком, и LLM сознательно не зовётся — без знаний он отвечал бы
@@ -42,7 +76,7 @@ export type Llm = ReturnType<typeof createLlm>;
 
 /**
  * Зависимости «мозга» — точки инъекции для тестов; в рантайме createBrain()
- * без аргументов (llm и log — дефолтные инстансы).
+ * без аргументов (llm, log, search и knowledge — дефолтные инстансы).
  */
 export interface BrainDeps {
   /** Транспорт LLM; по умолчанию createLlm() (глобальный fetch + process.env). */
@@ -51,51 +85,10 @@ export interface BrainDeps {
   log?: Logger;
   /** Хранилище справки; по умолчанию общий knowledge из brain/knowledge.ts. */
   knowledge?: KnowledgeStore;
-}
-
-// ── Dumb-режим: поиск по справке без нейросети ─────────────────────
-
-const STOP_WORDS = new Set([
-  "как",
-  "что",
-  "для",
-  "или",
-  "это",
-  "мне",
-  "надо",
-  "можно",
-  "есть",
-  "какой",
-  "какая",
-  "какие",
-  "почему",
-  "зачем",
-  "когда",
-  "где",
-]);
-
-function tokenize(text: string): string[] {
-  return text
-    .toLowerCase()
-    .replace(/[^a-zа-яё0-9\s]/gi, " ")
-    .split(/\s+/)
-    .filter((word) => word.length >= 3 && !STOP_WORDS.has(word));
-}
-
-function dumbAnswer(question: string, entries: KnowledgeItem[]): string {
-  const tokens = tokenize(question);
-  if (tokens.length === 0) return FALLBACK_ANSWER;
-
-  let best: { item: KnowledgeItem; score: number } | null = null;
-  for (const item of entries) {
-    const haystack = tokenize(`${item.title} ${item.text}`);
-    const hits = tokens.filter((token) => haystack.includes(token)).length;
-    const score = hits / tokens.length;
-    if (!best || score > best.score) best = { item, score };
-  }
-
-  if (!best || best.score < DUMB_SCORE_THRESHOLD) return FALLBACK_ANSWER;
-  return best.item.text;
+  /** Сборщик system-промта; по умолчанию systemPrompt из brain/prompt.ts. */
+  prompt?: typeof systemPrompt;
+  /** Поиск по справке; по умолчанию rankKnowledge из brain/search.ts. */
+  search?: typeof rankKnowledge;
 }
 
 // ── Единая точка входа для вебчата и Telegram ──────────────────────
@@ -112,12 +105,47 @@ export function createBrain(deps: BrainDeps = {}) {
   const llm = deps.llm ?? createLlm();
   const log = deps.log ?? rootLog;
   const knowledge = deps.knowledge ?? rootKnowledge;
+  const promptFn = deps.prompt ?? systemPrompt;
+  const search = deps.search ?? rankKnowledge;
+
+  // Подсказки dumb-fallback — «что спросить дальше»: до 2 near-miss (лучшие
+  // попадания ниже порога), затем гарантированный контакт (запись с
+  // contact: true), затем темы uiTopics добивают список до лимита. Пул собирается
+  // с повторами сознательно: дедупликация по id — единая точка контракта «максимум
+  // 3 уникальных» (near-miss легко совпадает с contact или темой). Подсказки —
+  // UI-слой: вопрос и история не нужны, knowledge берётся из замыкания deps.
+  function pickSuggestions(hits: SearchHit[], entries: KnowledgeItem[]): BrainSuggestion[] {
+    const near = hits
+      .filter((hit) => hit.score < DUMB_SCORE_THRESHOLD)
+      .slice(0, 2)
+      .map((hit) => hit.item);
+
+    const contact = entries.find((item) => item.contact === true);
+    const pool = [
+      ...near,
+      ...(contact ? [contact] : []),
+      ...uiTopics(knowledge, DUMB_SUGGESTIONS_LIMIT),
+    ];
+
+    const seen = new Set<string>();
+    const unique: KnowledgeItem[] = [];
+    for (const item of pool) {
+      if (seen.has(item.id)) continue;
+      seen.add(item.id);
+      unique.push(item);
+    }
+
+    return unique.slice(0, DUMB_SUGGESTIONS_LIMIT).map(({ id, title }) => ({ id, title }));
+  }
 
   /**
    * Отвечает на вопрос пользователя; единая точка входа для вебчата и Telegram.
    * Спрашивает LLM (bot/llm.ts) с system-промтом (prompt.ts) и историей; при
    * любой ошибке транспорта (LLM не настроен, таймаут, не-2xx, пустой ответ)
-   * падает в dumb-режим — поиск по справке без сети. Если справка недоступна
+   * падает в dumb-режим — поиск по справке без сети. Ошибка сборки промта
+   * (битый {{KNOWLEDGE}} в md) — отдельная деградация с честным логом: промт
+   * собирается в собственном try до вызова LLM, чтобы причина не маскировалась
+   * под «LLM недоступен» — при ней LLM никто не вызывал. Если справка недоступна
    * (битый/отсутствующий knowledge.json) — безопасный текст без сети и без
    * вызова LLM. Никогда не бросает.
    *
@@ -127,7 +155,9 @@ export function createBrain(deps: BrainDeps = {}) {
    * @param {string} question - Текущий вопрос пользователя.
    * @param {ChatMessage[]} [history=[]] - Предыдущие сообщения диалога (уже
    *   достанные из store); в промт идут последние 10.
-   * @returns {Promise<BrainAnswer>} Текст ответа и mode: 'llm' | 'dumb'.
+   * @returns {Promise<BrainAnswer>} Текст ответа и mode: 'llm' | 'dumb'; для
+   *   dumb-fallback — ещё suggestions (подсказки следующего вопроса), у остальных
+   *   режимов поля нет.
    */
   async function answer(question: string, history: ChatMessage[] = []): Promise<BrainAnswer> {
     // question — текущий вопрос пользователя, history — предыдущие сообщения
@@ -135,18 +165,51 @@ export function createBrain(deps: BrainDeps = {}) {
     // bot/http/telegram-webhook.ts).
 
     // Справка — общий источник знаний обоих режимов. Недоступна целиком →
-    // короткое замыкание до try: безопасный ответ, LLM не зовётся. Внутри
-    // try после этого остаются только ошибки транспорта, поэтому
-    // «LLM недоступен» в catch не врёт про причину.
+    // короткое замыкание до try: безопасный ответ, LLM не зовётся.
     const entries = knowledge.load();
     if (!entries) return { text: UNAVAILABLE_ANSWER, mode: "dumb" };
 
+    // Dumb-путь общий для обеих деградаций ниже: работает по одному вопросу —
+    // историю игнорирует сознательно. Сам алгоритм ранжирования живёт в
+    // brain/search.ts; brain решает только, уверенное ли попадание (порог)
+    // и что отдать вместо промаха. Подсказки — только у fallback: уверенный
+    // dumb-ответ вопрос уже решил, а UNAVAILABLE_ANSWER означает, что справки
+    // нет вовсе и подсказки брать неоткуда.
+    function dumbAnswer(entries: KnowledgeItem[]): BrainAnswer {
+      const hits: SearchHit[] = search(question, entries);
+      const best = hits[0];
+      if (best && best.score >= DUMB_SCORE_THRESHOLD) {
+        return { text: formatHit(best.item), mode: "dumb" };
+      }
+      const suggestions = pickSuggestions(hits, entries);
+      return {
+        text: suggestions.length > 0 ? FALLBACK_WITH_SUGGESTIONS : FALLBACK_PLAIN,
+        mode: "dumb",
+        ...(suggestions.length > 0 ? { suggestions } : {}),
+      };
+    }
+
+    // Сборка промта — отдельно от try транспорта: systemPrompt() валидирует
+    // {{KNOWLEDGE}} и бросает при сломанных md. Иначе ошибка контента ловилась
+    // бы catch'ем транспорта и логировалась как «LLM недоступен» — ложная
+    // атрибуция, уводящая диагностику не туда (см. tasks/04, §5).
+    let prompt: string;
+    try {
+      prompt = promptFn(entries);
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      log.error("brain", `system-промт не собран (${reason}), отвечаю в dumb-режиме`);
+      return dumbAnswer(entries);
+    }
+
+    // System-промт ставит brain: транспорт не знает про prompt.ts. В этом try
+    // остаются только ошибки транспорта — «LLM недоступен» в catch говорит
+    // ровно то, что случилось.
     const recent = history.slice(-HISTORY_WINDOW).map(({ role, content }) => ({ role, content }));
     try {
-      // System-промт ставит brain: транспорт не знает про prompt.ts.
       return {
         text: await llm.chat([
-          { role: "system", content: systemPrompt(entries) },
+          { role: "system", content: prompt },
           ...recent,
           { role: "user", content: question },
         ]),
@@ -155,8 +218,7 @@ export function createBrain(deps: BrainDeps = {}) {
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
       log.error("brain", `LLM недоступен (${reason}), отвечаю в dumb-режиме`);
-      // Dumb-режим работает по одному вопросу — историю игнорирует сознательно.
-      return { text: dumbAnswer(question, entries), mode: "dumb" };
+      return dumbAnswer(entries);
     }
   }
 

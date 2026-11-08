@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { systemPrompt } from "../brain/prompt";
 import {
   createKnowledge,
   knowledge,
@@ -31,6 +32,25 @@ function makeKnowledge(readImpl: (url: URL) => string) {
 function storeWith(entries: KnowledgeItem[]): Pick<KnowledgeStore, "load"> {
   return { load: () => entries };
 }
+
+/** Читалка-фикстура для systemPrompt: см. prompt.test.ts. */
+function fixtureRead(parts: Record<string, string>) {
+  return {
+    read: (url: URL) => {
+      const name = url.pathname.split("/").at(-1) ?? "";
+      const content = parts[name];
+      if (content === undefined) throw new Error(`неожиданный файл промта: ${name}`);
+      return content;
+    },
+  };
+}
+
+/** Разделы промта для fixtureRead: плейсхолдер справки должен быть ровно один. */
+const PROMPT_PARTS = {
+  "00-persona.md": "ПЕРСОНА.",
+  "10-rules.md": "ПРАВИЛА.",
+  "20-knowledge.md": "СПРАВКА:\n\n{{KNOWLEDGE}}",
+};
 
 afterEach(() => {
   vi.clearAllMocks();
@@ -165,6 +185,115 @@ describe("knowledge: валидация формы", () => {
     expect(log.warn).toHaveBeenCalledWith("knowledge", expect.stringContaining("about не true"));
   });
 
+  it("валидный keywords — массив непустых строк — сохраняется как есть", () => {
+    const json = JSON.stringify([
+      { id: "pricing", title: "Стоимость", text: "текст", keywords: ["цена", "стоит"] },
+      { id: "empty", title: "Пустой", text: "текст", keywords: [] },
+    ]);
+    const { store, log } = makeKnowledge(() => json);
+
+    expect(store.load()).toEqual([
+      { id: "pricing", title: "Стоимость", text: "текст", keywords: ["цена", "стоит"] },
+      { id: "empty", title: "Пустой", text: "текст", keywords: [] },
+    ]);
+    expect(log.warn).not.toHaveBeenCalled();
+  });
+
+  it("keywords-мусор: строка, число, массив с пустой строкой → warn, поле удалено, запись живёт", () => {
+    const json = JSON.stringify([
+      { id: "a", title: "Т", text: "текст", keywords: "цена" },
+      { id: "b", title: "Т", text: "текст", keywords: 42 },
+      { id: "c", title: "Т", text: "текст", keywords: ["цена", ""] },
+      { id: "d", title: "Т", text: "текст", keywords: [42] },
+    ]);
+    const { store, log } = makeKnowledge(() => json);
+
+    const entries = store.load();
+
+    // Поле удалено целиком — мусор не доезжает до поиска, записи остались
+    expect(entries).toEqual([
+      { id: "a", title: "Т", text: "текст" },
+      { id: "b", title: "Т", text: "текст" },
+      { id: "c", title: "Т", text: "текст" },
+      { id: "d", title: "Т", text: "текст" },
+    ]);
+    expect(log.warn).toHaveBeenCalledTimes(4);
+    expect(log.warn).toHaveBeenCalledWith(
+      "knowledge",
+      expect.stringContaining("keywords не массив непустых строк"),
+    );
+  });
+
+  it("keywords не попадают в systemPrompt и uiTopics — только поисковый слой", () => {
+    const entries: KnowledgeItem[] = [
+      {
+        id: "chip-record",
+        title: "Тема-чип",
+        text: "Текст справки.",
+        chip: true,
+        keywords: ["секретный-синоним"],
+      },
+      {
+        id: "plain-record",
+        title: "Тема без чипа",
+        text: "Текст.",
+        keywords: ["секретный-синоним"],
+      },
+    ];
+
+    // Промт собирается из title+text: синоним в него не утекает
+    const prompt = systemPrompt(entries, fixtureRead(PROMPT_PARTS));
+    expect(prompt).toContain("## Тема-чип\nТекст справки.");
+    expect(prompt).not.toContain("секретный-синоним");
+
+    // uiTopics собирается по chip-пометке: keywords не влияют на состав
+    expect(uiTopics(storeWith(entries)).map((item) => item.id)).toEqual(["chip-record"]);
+  });
+
+  it("contact: true сохраняется как есть", () => {
+    const { store, log } = makeKnowledge(() =>
+      JSON.stringify([{ id: "contacts", title: "Контакты", text: "текст", contact: true }]),
+    );
+
+    expect(store.load()).toEqual([
+      { id: "contacts", title: "Контакты", text: "текст", contact: true },
+    ]);
+    expect(log.warn).not.toHaveBeenCalled();
+  });
+
+  it("contact не true (правка руками мимо контракта) → warn, флаг игнорируется, запись живёт", () => {
+    const json = JSON.stringify([
+      { id: "a", title: "Т", text: "текст", contact: "true" },
+      { id: "b", title: "Т", text: "текст", contact: 1 },
+    ]);
+    const { store, log } = makeKnowledge(() => json);
+
+    const entries = store.load();
+
+    // Записи живы вместе с сырым значением — потребители проверяют === true
+    expect(entries).toEqual([
+      { id: "a", title: "Т", text: "текст", contact: "true" },
+      { id: "b", title: "Т", text: "текст", contact: 1 },
+    ]);
+    expect(entries?.every((item) => item.contact !== true)).toBe(true);
+    expect(log.warn).toHaveBeenCalledTimes(2);
+    expect(log.warn).toHaveBeenCalledWith("knowledge", expect.stringContaining("contact не true"));
+  });
+
+  it("несколько contact: true — не ошибка: выбор первой в файле остаётся за потребителем (find)", () => {
+    const json = JSON.stringify([
+      { id: "first", title: "Первая", text: "текст", contact: true },
+      { id: "second", title: "Вторая", text: "текст", contact: true },
+    ]);
+    const { store, log } = makeKnowledge(() => json);
+
+    expect(store.load()).toEqual([
+      { id: "first", title: "Первая", text: "текст", contact: true },
+      { id: "second", title: "Вторая", text: "текст", contact: true },
+    ]);
+    expect(log.warn).not.toHaveBeenCalled();
+  });
+
   it("реальный knowledge.json валиден целиком: ничего не отброшено, id уникальны, UI-пометки на месте", () => {
     // Страховка контента: правка knowledge.json руками ловится pre-commit'ом,
     // а не на проде (файл читается дефолтным инстансом — реальный fs).
@@ -185,6 +314,9 @@ describe("knowledge: валидация формы", () => {
     // UI-пометки существуют: чипсы для кнопок и текст для /about
     expect(entries.filter((item) => item.chip === true).length).toBeGreaterThan(0);
     expect(entries.some((item) => item.about === true)).toBe(true);
+    // Стартовый набор dumb-поиска на месте: синонимы заполнены, есть запись-контакт
+    expect(entries.filter((item) => item.keywords !== undefined).length).toBeGreaterThan(0);
+    expect(entries.some((item) => item.contact === true)).toBe(true);
   });
 });
 

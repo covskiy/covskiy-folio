@@ -53,6 +53,10 @@ function updateWithCallback(data: string, messageId = 10): Request {
 interface HarnessOptions {
   /** Ответ fakeBrain. */
   llmText?: string;
+  /** Режим ответа fakeBrain (по умолчанию llm). */
+  mode?: "llm" | "dumb";
+  /** Подсказки dumb-fallback от fakeBrain; не заданы — клавиатуры не будет. */
+  suggestions?: Array<{ id: string; title: string }>;
   /** Порог фейкового лимитера на один бакет (по умолчанию — без лимита). */
   rateLimitMax?: number;
   /** Режим мёртвого Redis: store-фейк ведёт себя fail-open ([] / no-op / false) — как реальный store при недоступном Redis. */
@@ -129,9 +133,17 @@ function makeHarness(options: HarnessOptions = {}): Harness {
       async (
         _question: string,
         _history: ChatMessage[] = [],
-      ): Promise<{ text: string; mode: "llm" }> => {
+      ): Promise<{
+        text: string;
+        mode: "llm" | "dumb";
+        suggestions?: Array<{ id: string; title: string }>;
+      }> => {
         events.push("brain:answer");
-        return { text: options.llmText ?? "ответ brain", mode: "llm" };
+        return {
+          text: options.llmText ?? "ответ brain",
+          mode: options.mode ?? "llm",
+          ...(options.suggestions ? { suggestions: options.suggestions } : {}),
+        };
       },
     ),
   };
@@ -241,7 +253,7 @@ describe("handleTelegramWebhook", () => {
     expect(keyboard?.inline_keyboard[2][0]).toMatchObject({ callback_data: "ask:contacts" });
   });
 
-  it("/help → список умений, без обращения к LLM", async () => {
+  it("/help → текст помощи + кнопки тем, без обращения к LLM", async () => {
     vi.stubEnv("TELEGRAM_WEBHOOK_SECRET", SECRET);
     const { handle, tg, brain } = makeHarness();
 
@@ -249,6 +261,26 @@ describe("handleTelegramWebhook", () => {
 
     expect(tg.sendMessage).toHaveBeenCalledTimes(1);
     expect(lastSend(tg)[1]).toContain("/reset");
+    expect(lastSend(tg)[1]).toContain("/about");
+    // Темы кликабельны: тот же startKeyboard, что у /start
+    const keyboard = lastSend(tg)[2];
+    expect(keyboard?.inline_keyboard).toHaveLength(3);
+    expect(keyboard?.inline_keyboard[0][0]).toMatchObject({
+      text: "Услуги",
+      callback_data: "ask:services",
+    });
+    expect(brain.answer).not.toHaveBeenCalled();
+  });
+
+  it("справка недоступна: /help → текст без кнопок, а не «неполадки»", async () => {
+    vi.stubEnv("TELEGRAM_WEBHOOK_SECRET", SECRET);
+    const { handle, tg, brain } = makeHarness({ noKnowledge: true });
+
+    await handle(updateWithText("/help"));
+
+    expect(tg.sendMessage).toHaveBeenCalledTimes(1);
+    expect(lastSend(tg)[1]).toContain("/help");
+    expect(lastSend(tg)[2]).toBeUndefined();
     expect(brain.answer).not.toHaveBeenCalled();
   });
 
@@ -336,11 +368,45 @@ describe("handleTelegramWebhook", () => {
       "tg:sendMessage",
       "store:appendHistory",
     ]);
-    expect(tg.sendMessage).toHaveBeenCalledWith(42, "ответ brain");
+    // Третий аргумент — reply_markup: без подсказок он undefined (без клавиатуры)
+    expect(tg.sendMessage).toHaveBeenCalledWith(42, "ответ brain", undefined);
     expect(store.appendHistory).toHaveBeenCalledWith("chat:tg:42", [
       { role: "user", content: "кто ты?" },
       { role: "assistant", content: "ответ brain" },
     ]);
+  });
+
+  it("dumb-fallback с подсказками → sendMessage получает inline-клавиатуру с ask:{id}", async () => {
+    vi.stubEnv("TELEGRAM_WEBHOOK_SECRET", SECRET);
+    const { handle, tg } = makeHarness({
+      mode: "dumb",
+      llmText: "Не нашёл точного ответа в справке. 🤔",
+      suggestions: [
+        { id: "contacts", title: "Контакты" },
+        { id: "services", title: "Услуги" },
+      ],
+    });
+
+    await handle(updateWithText("ракета на марс"));
+
+    expect(tg.sendMessage).toHaveBeenCalledTimes(1);
+    const [chatId, text, keyboard] = lastSend(tg);
+    expect(chatId).toBe(42);
+    expect(text).toBe("Не нашёл точного ответа в справке. 🤔");
+    // callback_data = ask:{id} — клик уходит в существующий handleCallbackQuery
+    expect(keyboard?.inline_keyboard).toEqual([
+      [{ text: "Контакты", callback_data: "ask:contacts" }],
+      [{ text: "Услуги", callback_data: "ask:services" }],
+    ]);
+  });
+
+  it("dumb-fallback без подсказок → сообщение без клавиатуры", async () => {
+    vi.stubEnv("TELEGRAM_WEBHOOK_SECRET", SECRET);
+    const { handle, tg } = makeHarness({ mode: "dumb", llmText: "Не нашёл…" });
+
+    await handle(updateWithText("ракета на марс"));
+
+    expect(tg.sendMessage).toHaveBeenCalledWith(42, "Не нашёл…", undefined);
   });
 
   it("callback ask:{id} → answerCallbackQuery, ответ как обычный вопрос, клавиатура снята", async () => {
@@ -550,7 +616,8 @@ describe("handleTelegramWebhook: fail-open (store в режиме мёртвог
     expect(res.status).toBe(200);
     // brain вызван, ответ доставлен пользователю несмотря на мёртвый store
     expect(brain.answer).toHaveBeenCalledTimes(1);
-    expect(tg.sendMessage).toHaveBeenCalledWith(42, "ответ brain");
+    // Третий аргумент — reply_markup: без подсказок он undefined (без клавиатуры)
+    expect(tg.sendMessage).toHaveBeenCalledWith(42, "ответ brain", undefined);
   });
 });
 

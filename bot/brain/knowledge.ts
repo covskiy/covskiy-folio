@@ -15,6 +15,12 @@ export interface KnowledgeItem {
   title: string;
   /** Текст ответа: вставляется в промт и отдаётся в dumb-режиме как есть. */
   text: string;
+  /** Синонимы для dumb-поиска (brain/search.ts): слова, которыми люди называют
+   *  тему. В промт и UI не попадают — только поисковый слой. */
+  keywords?: string[];
+  /** Запись-контакт: гарантированная подсказка в dumb-fallback; в промт,
+   *  чипсы и uiTopics не попадает. */
+  contact?: true;
   /** Пометка UI-темы: запись попадает в чипсы вебчата и кнопки /start (uiTopics). */
   chip?: true;
   /** Пометка «текст о владельце»: запись отвечает на /about. */
@@ -66,6 +72,9 @@ export interface KnowledgeDeps {
  * Валидация формы — контент правится руками, tsc json не проверяет:
  * - битая запись (нет/пуст title или text) отбрасывается с warn — одна
  *   кривая строка не убивает весь файл (fail-soft);
+ * - keywords не массив непустых строк → warn, поле удаляется, запись живёт:
+ *   мусор не должен доехать до поиска, но терять запись из-за него нечестно;
+ * - contact не true → warn, флаг игнорируется (потребители проверяют === true);
  * - не-массив или непарсируемый JSON → null — доверять файлу нельзя
  *   (fail-safe); потребители деградируют по своей роли: UI — пустые
  *   списки, brain — безопасный ответ, админка — диагностируемая ошибка.
@@ -124,6 +133,32 @@ export function createKnowledge(deps: KnowledgeDeps = {}): KnowledgeStore {
           return;
         }
         seenIds.add(id);
+        // keywords идут только в dumb-поиск. Мусор (строка, число, массив с
+        // пустой строкой) не доезжает до поиска: поле удаляется, запись живёт —
+        // fail-soft в духе chip/about, но с удалением, чтобы поисковому слою
+        // не приходилось повторять эту валидацию.
+        const keywords: unknown = record.keywords;
+        if (
+          keywords !== undefined &&
+          !(
+            Array.isArray(keywords) &&
+            keywords.every((k) => typeof k === "string" && k.trim() !== "")
+          )
+        ) {
+          log.warn(
+            "knowledge",
+            `запись ${index} (id «${id}»): keywords не массив непустых строк — поле удалено`,
+          );
+          delete record.keywords;
+        }
+        // contact — флаг записи-контакта; потребители проверяют === true,
+        // поэтому не-true достаточно игнорировать с warn, без мутации записи.
+        if (record.contact !== undefined && record.contact !== true) {
+          log.warn(
+            "knowledge",
+            `запись ${index} (id «${id}»): contact не true — флаг игнорируется`,
+          );
+        }
         // Пометка не-булевым true — правка руками мимо контракта («chip»: «true»):
         // запись живёт, но в UI не попадает — владелец должен увидеть это в логе.
         if (record.chip !== undefined && record.chip !== true) {

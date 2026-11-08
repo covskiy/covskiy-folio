@@ -58,6 +58,9 @@
   font-weight: 700;
 }
 
+/* Кнопки шапки (? — помощь, ⟳ — новый диалог, ✕ — закрыть): один стиль */
+.chat__help,
+.chat__new,
 .chat__close {
   border: none;
   background: none;
@@ -73,16 +76,7 @@
   gap: 8px;
 }
 
-/* Кнопка «новый диалог» — в стиле крестика закрытия */
-.chat__new {
-  border: none;
-  background: none;
-  font-size: 16px;
-  cursor: pointer;
-  color: var(--muted, #64748b);
-  padding: 4px;
-}
-
+.chat__help:hover,
 .chat__new:hover {
   color: var(--accent, #0284c7);
 }

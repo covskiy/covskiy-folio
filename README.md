@@ -5,8 +5,10 @@
 
 - если доступен OpenAI-совместимый LLM-endpoint (по умолчанию **Ollama Cloud**,
   локально — **llama.cpp**) — вопрос обрабатывает нейросеть;
-- если LLM недоступен — включается **dumb-режим**: детерминированный поиск по
-  параграфам справки, без нейросети и без токенов.
+- если LLM недоступен — включается **dumb-режим**: поиск по справке (морфология,
+  IDF, синонимы `keywords`) без нейросети и без токенов; промах поиска приходит
+  с подсказками тем, среди которых гарантированно есть контакты, а помощь
+  (`?` в вебчате, `/help` в Telegram) работает в любом режиме.
 
 История диалогов (вебчат и Telegram) живёт на сервере — **Upstash Redis**,
 TTL 24 часа; без Redis бот отвечает в stateless-режиме (fail-open).
@@ -23,8 +25,8 @@ covskiy-folio/
 │  ├─ style.css                             # стили страниц
 │  ├─ vite-env.d.ts                         # типы Vite (импорт css и т.п.)
 │  └─ chat/
-│     ├─ chat-widget.ts                     # UI виджета (кнопка → панель, «печатает…»)
-│     ├─ chat-api.ts                        # клиент /api/chat: sessionId в localStorage, чипсы
+│     ├─ chat-widget.ts                     # UI виджета (кнопка → панель, «печатает…», помощь «?», подсказки)
+│     ├─ chat-api.ts                        # клиент /api/chat: sessionId в localStorage, бутстрап (чипсы + помощь)
 │     └─ chat.css                           # стили виджета
 ├─ bot/                                     # СЕРВЕРНАЯ ЛОГИКА (вне api/ — см. docs/architecture.md)
 │  ├─ http/                                 # обработчики маршрутов
@@ -33,13 +35,15 @@ covskiy-folio/
 │  │  └─ telegram-admin.ts                  # /api/telegram-setup (health, промт, вебхук)
 │  ├─ telegram-api.ts                       # обёртка Bot API (sendMessage и др.) на fetch
 │  ├─ brain/                                # «мозг» + контент
-│  │  ├─ brain.ts                           # answer(): LLM (env LLM_TIMEOUT_MS, дефолт 15 c) → dumb
+│  │  ├─ brain.ts                           # answer(): LLM (env LLM_TIMEOUT_MS, дефолт 15 c) → dumb (порог 0.3, подсказки fallback)
+│  │  ├─ search.ts                          # dumb-поиск: rankKnowledge() — нормализация, стемминг, IDF, keywords
 │  │  ├─ knowledge.ts                       # хранилище справки: безопасное чтение, uiTopics()
+│  │  ├─ help.ts                            # тексты помощи: вебчат (?/help), Telegram /help, запасной
 │  │  ├─ prompt.ts                          # сборщик system prompt (md-разделы + справка)
 │  │  ├─ knowledge.json                     # ★ СПРАВКА «мозга» — редактируй здесь
 │  │  └─ prompts/                           # разделы system prompt (persona, rules, knowledge)
 │  ├─ store.ts                              # история диалогов: Upstash Redis REST, fail-open
-│  ├─ tests/                                # unit-тесты (Vitest): brain, знания, промт, store, webchat, webhook, admin, роутер
+│  ├─ tests/                                # unit-тесты (Vitest): brain, поиск, помощь, знания, промт, store, webchat, webhook, admin, роутер
 │  └─ dev/
 │     └─ dev-function.mjs                   # dev-адаптер (замена vercel dev) + заглушка Upstash, не деплоится
 ├─ api/
@@ -108,10 +112,13 @@ Conventional Commits (`feat:`, `fix:`, `docs:`, `chore:`, …) — провер�
 ## Обновление справки
 
 Справка — [`bot/brain/knowledge.json`](bot/brain/knowledge.json) (массив
-`{id, title, text, chip?, about?}` — контракт полей в [docs/manual.md](docs/manual.md),
+`{id, title, text, keywords?, contact?, chip?, about?}` — контракт полей в
+[docs/manual.md](docs/manual.md),
 раздел «Правки контента»),
 system prompt — [`bot/brain/prompts/`](bot/brain/prompts). Поменял текст → `git push` →
-автодеплой → и сайт, и бот отвечают по-новому. История диалогов живёт в
+автодеплой → и сайт, и бот отвечают по-новому. Синонимы для dumb-поиска —
+`keywords`: вопрос стабильно не находится — сначала добавь синоним, а не правь
+алгоритм (`bot/brain/search.ts`). История диалогов живёт в
 Upstash Redis и на контент не влияет: она истечёт по TTL сама (24 часа) или
 очистится командой `/reset`.
 

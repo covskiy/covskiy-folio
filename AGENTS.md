@@ -52,7 +52,10 @@ LLM — любой OpenAI-совместимый endpoint (`LLM_BASE_URL`, по 
 - Файлы — LF (`.gitattributes`, `.editorconfig`); не менять переводы строк руками.
 - Комментарии объясняют «почему», а не «что»; пользовательские тексты — по-русски.
 - Контент справки бота правится в `bot/brain/knowledge.json` (промт — в
-  `bot/brain/prompts/*.md`), не в коде `bot/brain/brain.ts`.
+  `bot/brain/prompts/*.md`), не в коде `bot/brain/brain.ts`. Dumb-поиск живёт в
+  `bot/brain/search.ts` (порог и подсказки — в `brain.ts`): вопрос не находится —
+  сначала добавь синоним в `keywords` записи, не правь алгоритм. Тексты помощи
+  (вебчат `?`/`/help`, Telegram `/help`) — только в `bot/brain/help.ts`.
 - Функция одна: `api/bot.ts` — только роутер по pathname; новая логика — в `bot/`,
   новый маршрут — ветка switch + обработчик в `bot/` (+ rewrites в `vercel.json`).
 - Относительные импорты в `api/` и `bot/` — **только с расширением `.js`** (`"./brain.js"`).

@@ -3,6 +3,9 @@
 import { config } from "../config.js";
 import { log as rootLog, type Logger } from "../log.js";
 import { answer, type Brain } from "../brain/brain.js";
+// Текст помощи — общий источник на оба канала (brain/help.ts), а не локальная
+// константа: вебчат и Telegram не должны разъезжаться формулировками.
+import { HELP_TEXT_TELEGRAM } from "../brain/help.js";
 import {
   ID_PATTERN_SOURCE,
   uiTopics,
@@ -35,14 +38,6 @@ const SECRET_HEADER = "x-telegram-bot-api-secret-token";
 const WELCOME_TEXT = [
   "Привет! Я справочный бот этого сайта — отвечу на вопросы обо мне, моих услугах и контактах.",
   "Задай вопрос текстом или нажми кнопку ниже.",
-].join("\n");
-
-const HELP_TEXT = [
-  "Что я умею:",
-  "• отвечаю на вопросы — по справке этого сайта, с учётом истории диалога;",
-  "• /about — коротко о владельце;",
-  "• /reset — начать новый диалог (очистить историю);",
-  "• /help — этот список.",
 ].join("\n");
 
 const RESET_DONE_TEXT = "История диалога очищена — начинаем с чистого листа.";
@@ -154,8 +149,20 @@ export function createTelegramWebhookHandler(deps: TelegramWebhookHandlerDeps) {
     }
     const key = tgKey(chatId);
     const history = await store.getHistory(key);
-    const { text: reply } = await brain.answer(question, history);
-    await tg.sendMessage(chatId, reply);
+    const { text: reply, suggestions } = await brain.answer(question, history);
+    // Подсказки dumb-fallback → inline-клавиатура с callback_data ask:{id}:
+    // клик идёт в существующий handleCallbackQuery, как нажатие кнопки /start.
+    // Остальные режимы (llm-ответ, уверенный dumb, недоступная справка) —
+    // без клавиатуры: ответу есть что сказать и без «что спросить дальше».
+    // В историю пишется только текст: подсказки — UI-слой, не реплика диалога.
+    const keyboard: TgInlineKeyboardMarkup | undefined = suggestions?.length
+      ? {
+          inline_keyboard: suggestions.map(({ id, title }) => [
+            { text: title, callback_data: `ask:${id}` },
+          ]),
+        }
+      : undefined;
+    await tg.sendMessage(chatId, reply, keyboard);
     await store.appendHistory(key, [
       { role: "user", content: question },
       { role: "assistant", content: reply },
@@ -182,7 +189,11 @@ export function createTelegramWebhookHandler(deps: TelegramWebhookHandlerDeps) {
         await tg.sendMessage(chatId, WELCOME_TEXT, startKeyboard());
         return;
       case "help":
-        await tg.sendMessage(chatId, HELP_TEXT);
+        // Помощь кликабельна: тот же startKeyboard, что у /start — темы
+        // нажимаются как кнопки. Справка недоступна → startKeyboard() вернёт
+        // undefined → уйдёт просто текст (команда не должна превращаться
+        // в «технические неполадки»).
+        await tg.sendMessage(chatId, HELP_TEXT_TELEGRAM, startKeyboard());
         return;
       case "reset":
         await store.clearHistory(tgKey(chatId));

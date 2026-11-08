@@ -1,4 +1,5 @@
 import { answer, type Brain } from "../brain/brain.js";
+import { HELP_TEXT_WEBCHAT } from "../brain/help.js";
 import { uiTopics, knowledge as rootKnowledge, type KnowledgeStore } from "../brain/knowledge.js";
 import { hitRateLimit } from "../rate-limit.js";
 import { appendHistory, getHistory, webKey, type Store } from "../store.js";
@@ -65,10 +66,12 @@ export function createWebChatHandler(deps: WebChatHandlerDeps) {
   const { store, brain, limit, knowledge } = deps;
 
   /**
-   * Обработчик /api/chat — бэкенд вебчата. GET отдаёт статус и чипсы-подсказки
+   * Обработчик /api/chat — бэкенд вебчата. GET отдаёт статус, чипсы-подсказки
    * (uiTopics: помеченные chip: true записи, максимум 3; недоступная справка —
-   * пустой список: чипсы декорация, виджет переживает их отсутствие); POST
-   * {sessionId, text} — ответ «мозга» с серверной историей диалога
+   * пустой список: чипсы декорация, виджет переживает их отсутствие) и текст
+   * помощи — статическую константу из brain/help.ts, не зависящую от справки:
+   * она отдаётся всегда, кнопка «?» обязана работать и в offline-режиме.
+   * POST {sessionId, text} — ответ «мозга» с серверной историей диалога
    * (достать → спросить → дописать пару вопрос/ответ).
    *
    * Стены против злоупотреблений, до парсинга тела: same-origin (чужая страница
@@ -79,7 +82,10 @@ export function createWebChatHandler(deps: WebChatHandlerDeps) {
    * Fail-open по store: без Redis ответ всё равно уходит, просто без контекста.
    *
    * @param {Request} request - Входящий запрос функции.
-   * @returns {Promise<Response>} GET → {ok, service, chips}; POST → {ok, text, mode}.
+   * @returns {Promise<Response>} GET → {ok, service, chips, help};
+   *   POST → {ok, text, mode, suggestions?} — подсказки (только {title}, id
+   *   клиенту не нужен) прилагает brain только к dumb-fallback: у llm-ответа,
+   *   уверенного dumb-ответа и UNAVAILABLE_ANSWER поля в JSON нет.
    */
   async function handleWebChat(request: Request): Promise<Response> {
     if (request.method === "GET") {
@@ -90,7 +96,7 @@ export function createWebChatHandler(deps: WebChatHandlerDeps) {
       // справка или пометки chip дают пустой список, а не 500 (причина — в логе
       // хранилища справки).
       const chips = uiTopics(knowledge).map((item) => ({ title: item.title }));
-      return Response.json({ ok: true, service: "webchat", chips });
+      return Response.json({ ok: true, service: "webchat", chips, help: HELP_TEXT_WEBCHAT });
     }
     if (request.method !== "POST") {
       return Response.json({ ok: false, error: "Method Not Allowed" }, { status: 405 });
@@ -140,13 +146,27 @@ export function createWebChatHandler(deps: WebChatHandlerDeps) {
     // bot/http/telegram-webhook.ts).
     const key = webKey(sessionId);
     const history = await store.getHistory(key);
-    const { text: reply, mode } = await brain.answer(question, history);
+    const { text: reply, mode, suggestions } = await brain.answer(question, history);
     await store.appendHistory(key, [
       { role: "user", content: question },
       { role: "assistant", content: reply },
     ]);
 
-    return Response.json({ ok: true, text: reply, mode });
+    // Подсказки — UI-слой поверх текста: клиенту хватает {title} (id нужен
+    // только Telegram для callback_data), в историю диалога они не идут. Поле
+    // отсутствует целиком, когда brain их не вернул — старые клиенты,
+    // игнорирующие незнакомые поля, не ломаются.
+    const body: {
+      ok: true;
+      text: string;
+      mode: "llm" | "dumb";
+      suggestions?: Array<{ title: string }>;
+    } = { ok: true, text: reply, mode };
+    if (suggestions && suggestions.length > 0) {
+      body.suggestions = suggestions.map(({ title }) => ({ title }));
+    }
+
+    return Response.json(body);
   }
 
   return handleWebChat;
