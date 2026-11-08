@@ -1,6 +1,7 @@
 import { createLlm } from "../llm.js";
 import { log as rootLog, type Logger } from "../log.js";
-import { knowledgeEntries, systemPrompt, type KnowledgeItem } from "./prompt.js";
+import { systemPrompt } from "./prompt.js";
+import { knowledgeEntries, type KnowledgeItem } from "./knowledge.js";
 // Единое определение сообщения диалога живёт в store.ts — дублировать нельзя.
 import type { ChatMessage } from "../store.js";
 

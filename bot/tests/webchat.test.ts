@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createWebChatHandler } from "../http/webchat";
-import { knowledgeEntries } from "../brain/prompt";
+import { knowledgeEntries } from "../brain/knowledge";
 import type { ChatMessage } from "../store";
 
 const URL = "http://localhost/api/chat";

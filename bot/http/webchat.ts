@@ -1,5 +1,5 @@
 import { answer, type Brain } from "../brain/brain.js";
-import { knowledgeEntries } from "../brain/prompt.js";
+import { knowledgeEntries } from "../brain/knowledge.js";
 import { hitRateLimit } from "../rate-limit.js";
 import { appendHistory, getHistory, webKey, type Store } from "../store.js";
 
