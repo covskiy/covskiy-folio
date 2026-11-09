@@ -85,6 +85,35 @@ describe("answer: LLM-ветка", () => {
     expect(messages[11]).toMatchObject({ role: "user", content: "текущий вопрос" });
   });
 
+  it("LLM отвечает markdown-ом → наружу и в историю уходит чистый plain text", async () => {
+    const llm = fakeLlm(async () =>
+      [
+        "Пять направлений:",
+        "- **PWA-приложения** — офлайн;",
+        "- `фронтенд` — React.",
+        "",
+        "### Детали — в личных.",
+      ].join("\n"),
+    );
+    const log = makeLog();
+    const { answer: brainAnswer } = createBrain({ llm, log, knowledge: fakeKnowledge() });
+
+    const result = await brainAnswer("что ты умеешь?");
+
+    // Модель прислала markdown — промт запретил, но не гарантирует
+    expect(result.mode).toBe("llm");
+    expect(result.text).toBe(
+      [
+        "Пять направлений:",
+        "• PWA-приложения — офлайн;",
+        "• фронтенд — React.",
+        "",
+        "Детали — в личных.",
+      ].join("\n"),
+    );
+    expect(result.text).not.toContain("**");
+  });
+
   it("HISTORY_WINDOW из env: окно 2 → в chat system + 2 последних + вопрос", async () => {
     vi.stubEnv("HISTORY_WINDOW", "2");
     const llm = fakeLlm(async () => "Ок");

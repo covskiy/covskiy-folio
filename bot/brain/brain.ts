@@ -3,6 +3,7 @@ import { log as rootLog, type Logger } from "../log.js";
 // Управляющие ручки (окно истории, порог dumb-ответа) — env-слайс brain из config.
 import { config } from "../config.js";
 import { systemPrompt } from "./prompt.js";
+import { toPlainText } from "./plain-text.js";
 import { rankKnowledge, type SearchHit } from "./search.js";
 import {
   knowledge as rootKnowledge,
@@ -212,11 +213,16 @@ export function createBrain(deps: BrainDeps = {}) {
       .map(({ role, content }) => ({ role, content }));
     try {
       return {
-        text: await llm.chat([
-          { role: "system", content: prompt },
-          ...recent,
-          { role: "user", content: question },
-        ]),
+        // Чистка markdown на единственной точке выхода ответа: Telegram и вебчат
+        // показывают текст как есть, а история в Redis уходит LLM на следующих
+        // ходах — чистый текст не даёт модели закреплять свой markdown.
+        text: toPlainText(
+          await llm.chat([
+            { role: "system", content: prompt },
+            ...recent,
+            { role: "user", content: question },
+          ]),
+        ),
         mode: "llm",
       };
     } catch (error) {
