@@ -34,8 +34,8 @@ describe("systemPrompt: сборка", () => {
 
     expect(prompt).toContain("ПЕРСОНА.");
     expect(prompt).toContain("ПРАВИЛА.");
-    expect(prompt).toContain("## Тема один\nТекст один");
-    expect(prompt).toContain("## Тема два\nТекст два");
+    expect(prompt).toContain("Тема один:\nТекст один");
+    expect(prompt).toContain("Тема два:\nТекст два");
     expect(prompt).not.toContain("{{KNOWLEDGE}}");
   });
 
@@ -92,7 +92,7 @@ describe("systemPrompt: контракт плейсхолдера", () => {
     // pre-commit'ом, а не на проде (реальный fs — как в рантайме).
     const prompt = systemPrompt(entries());
 
-    expect(prompt).toContain("## Тема один");
+    expect(prompt).toContain("Тема один:");
     expect(prompt).not.toContain("{{KNOWLEDGE}}");
   });
 });

@@ -210,7 +210,7 @@ describe("handleTelegramAdmin: разделы health и prompt", () => {
     const body = (await res.json()) as { ok: boolean; prompt: string };
     expect(body.ok).toBe(true);
     // Фикстура прошла через knowledge → systemPrompt: секция справки на месте
-    expect(body.prompt).toContain("## Тема-фикстура");
+    expect(body.prompt).toContain("Тема-фикстура:");
     expect(body.prompt).toContain("Текст-фикстура справки");
     expect(body.prompt).not.toContain("{{KNOWLEDGE}}");
   });

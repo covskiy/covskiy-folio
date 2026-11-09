@@ -243,7 +243,7 @@ describe("knowledge: валидация формы", () => {
 
     // Промт собирается из title+text: синоним в него не утекает
     const prompt = systemPrompt(entries, fixtureRead(PROMPT_PARTS));
-    expect(prompt).toContain("## Тема-чип\nТекст справки.");
+    expect(prompt).toContain("Тема-чип:\nТекст справки.");
     expect(prompt).not.toContain("секретный-синоним");
 
     // uiTopics собирается по chip-пометке: keywords не влияют на состав

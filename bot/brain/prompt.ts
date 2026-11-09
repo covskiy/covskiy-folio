@@ -57,8 +57,10 @@ export function systemPrompt(entries: KnowledgeItem[], deps: PromptDeps = {}): s
     cached = joined.replace(
       "{{KNOWLEDGE}}",
       // Функция вместо строки: $-последовательности в тексте справки
-      // иначе были бы съедены как спец-паттерны замены.
-      () => entries.map((item) => `## ${item.title}\n${item.text}`).join("\n\n"),
+      // иначе были бы съедены как спец-паттерны замены. Заголовок без «##»:
+      // markdown в справке провоцирует модель зеркалить разметку, которую
+      // мы запретили в 10-rules.md.
+      () => entries.map((item) => `${item.title}:\n${item.text}`).join("\n\n"),
     );
     promptCache.set(entries, cached);
   }
