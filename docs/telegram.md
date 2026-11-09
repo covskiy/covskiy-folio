@@ -50,8 +50,12 @@ curl https://covskiy-folio.vercel.app/api/telegram-setup \
 ```bash
 curl "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/setWebhook" \
   --data-urlencode "url=https://covskiy-folio.vercel.app/api/telegram" \
-  --data-urlencode "secret_token=$TELEGRAM_WEBHOOK_SECRET"
+  --data-urlencode "secret_token=$TELEGRAM_WEBHOOK_SECRET" \
+  --data-urlencode 'allowed_updates=["message","callback_query","my_chat_member"]'
 ```
+
+Без `allowed_updates` Telegram сохранит прежний фильтр, а не поставит новый —
+список здесь должен совпадать с `bot/http/telegram-admin.ts`.
 
 ## 4. Как это работает
 

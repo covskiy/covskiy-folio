@@ -402,8 +402,11 @@ Env-переменные (прод — Vercel → Settings → Environment Varia
    пометке `about: true`).
 3. Текст подсказки о команде добавь в `HELP_TEXT_TELEGRAM` в `bot/brain/help.ts`
    (там же живут тексты помощи вебчата — один источник на оба канала).
-4. Пуш → деплой. Регистрировать вебхук заново не нужно: `allowed_updates:
-   ["message"]` уже покрывает любые команды.
+4. Пуш → деплой. Фильтр `allowed_updates` (сейчас
+   `["message", "callback_query", "my_chat_member"]`) хранится **на стороне
+   Telegram** — деплой сам его не меняет. После правки списка перерегистрируй
+   вебхук: POST `/api/telegram-setup` или Actions-курьер `telegram-setup`
+   (кнопка `both`). История про кнопку-ловушку — `docs/diagnosis.md`.
 
 После каждого рецепта: правка = пуш → деплой → оба канала (вебчат и Telegram)
 отвечают по-новому.
