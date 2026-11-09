@@ -236,9 +236,12 @@ describe("pipeline: массив команд одним POST", () => {
         ["expire", "rate:web:1", "3600", "NX"],
       ]),
     ).resolves.toEqual([3, 1]);
-    expect(
-      JSON.parse(String((fetchMock.mock.calls[0] as unknown as [string, RequestInit])[1].body)),
-    ).toEqual([
+    // Пайплайн ходит на отдельный путь /pipeline: базовый эндпоинт ест одну
+    // плоскую команду и на вложенные массивы отвечает 400
+    // «ERR unsupported arg type: "["»
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe(`${REDIS_URL}/pipeline`);
+    expect(JSON.parse(String(init.body))).toEqual([
       ["incr", "rate:web:1"],
       ["expire", "rate:web:1", "3600", "NX"],
     ]);

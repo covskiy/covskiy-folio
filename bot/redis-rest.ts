@@ -141,7 +141,11 @@ export function createRedisRest(deps: RedisRestDeps = {}) {
     }
     const doFetch = deps.fetchImpl ?? fetch;
     try {
-      const response = await doFetch(redis.url, {
+      // Пайплайн живёт на отдельном пути /pipeline: базовый эндпоинт принимает
+      // только одну плоскую команду, а на массив массивов отвечает 400
+      // «ERR unsupported arg type: "["» — на этом формате лимитер молча
+      // деградировал с запуска (нашли по прод-логам 2026-11-09).
+      const response = await doFetch(`${redis.url}/pipeline`, {
         method: "POST",
         headers: { Authorization: `Bearer ${redis.token}` },
         body: JSON.stringify(commands),
