@@ -121,6 +121,66 @@ export default {
   в замыкании) с дефолтным `log`; уровень — `config.logLevel` (env `LOG_LEVEL`,
   дефолт warn), формат `[модуль] сообщение`.
 
+## Тайминги и деградации — что, где меряется, во что падает
+
+Ключевое разделение: **таймаут Upstash не переводит в dumb-режим** — он
+переводит в stateless (без истории/лимитера/дедупа), а LLM всё равно отвечает.
+В dumb уходит только падение самого LLM. Полная карта сбоя → последствия:
+
+| Сбой                                         | Последствие                                                               | Решение в коде                                      |
+| -------------------------------------------- | ------------------------------------------------------------------------- | --------------------------------------------------- |
+| LLM: таймаут / сеть / не-2xx / пустой ответ  | **dumb-ответ** по справке, ниже порога — FALLBACK + подсказки             | catch в `brain.answer` → `dumbAnswer`               |
+| LLM не настроен (`LLM_BASE_URL`+`LLM_MODEL`) | сразу dumb, LLM не зовётся                                                | throw в `llm.chat` → тот же catch                   |
+| Промт не собрался (битый md, плейсхолдер)    | сразу dumb, LLM не зовётся                                                | сборка в собственном try до LLM                     |
+| knowledge.json недоступен                    | заглушка UNAVAILABLE — без LLM и без поиска                               | короткое замыкание в `brain.answer`                 |
+| Upstash: таймаут / сеть / не-2xx             | stateless: история `[]`, лимитер пропускает, дедуп off — **LLM отвечает** | fail-open `redis-rest.ts`: `null` + `warnThrottled` |
+| Upstash упал на счётчике лимита              | вопрос пропускается (лимит не сработал)                                   | `counter === null → true` в `hitRateLimit`          |
+| Telegram `sendMessage` упал                  | «технические неполадки» текстом (обе ветки)                               | catch-блоки webhook                                 |
+
+Таймауты — по одному на каждый внешний вызов (`AbortSignal.timeout`):
+
+| Источник                          | Таймаут                    | Где                                              |
+| --------------------------------- | -------------------------- | ------------------------------------------------ |
+| LLM `chat()`                      | 15 с, env `LLM_TIMEOUT_MS` | `bot/llm.ts` (`LLM_TIMEOUT_DEFAULT_MS` в config) |
+| Upstash (каждая команда/pipeline) | 5 с, не настраивается      | `DEFAULT_TIMEOUT_MS` в `bot/redis-rest.ts`       |
+| Telegram API (все методы)         | 10 с, не настраивается     | `tgCall` в `bot/telegram-api.ts`                 |
+| LLM `ping()` (health)             | 10 с фиксированно          | `bot/llm.ts`                                     |
+
+Путь одного сообщения (`answerAsQuestion`; команды — то же без лимита/истории).
+Ссылки — по функциям, не по строкам: строки плывут, функции стабильно ищутся:
+
+```
+POST /api/telegram
+ ├─ секрет ── сверка заголовка                        webhook.ts · handleTelegramWebhook
+ ├─ дедуп: isSeen ── Upstash ≤5с, fail-open           webhook.ts · до ветвления
+ ├─ ветвление: callback / command / message
+ │
+ ├─ answerAsQuestion(chatId, question)
+ │   1. limit ── INCR+EXPIRE pipeline ── Upstash ≤5с   rate-limit.ts · hitRateLimit
+ │      fail-open: null = «пропустить»
+ │   2. sendChatAction «печатает…» ── TG ≤10с          webhook.ts · answerAsQuestion
+ │      ошибка глотается (косметика)
+ │   3. getHistory ── Upstash ≤5с, fail-open → []
+ │   4. brain.answer(question, history)                brain.ts · answer
+ │      4a. knowledge.load() → null → UNAVAILABLE      brain.ts · короткое замыкание
+ │          (заглушка, LLM НЕ зовётся)
+ │      4b. сборка промта бросил → dumbAnswer          brain.ts · собственный try
+ │      4c. llm.chat ≤15с ── истёк/ошибка/пусто        llm.ts · chat
+ │          → catch → dumbAnswer                       brain.ts · catch
+ │            search — чистый CPU, без сети
+ │            score ≥ 0.3 → formatHit («Заголовок\n\nтекст»)
+ │            ниже порога → FALLBACK + подсказки
+ │      успех → toPlainText → mode:"llm"
+ │   5. sendMessage ── TG ≤10с; упал → «неполадки»     webhook.ts · catch
+ │   6. appendHistory ── Upstash ≤5с, fail-open
+ └─ markSeen после успеха ── Upstash ≤5с               webhook.ts · после ветки
+```
+
+Бюджет худшего случая: все таймауты последовательные, при лежащем Redis+LLM
+суммарно ≈45 с — под потолком Fluid-функции; если платформа убьёт запрос,
+Telegram ретраит апдейт, и дедуп спасает от второго ответа только при
+успешном `markSeen`. В happy path: Redis ~50–150 мс × 3–4 вызова, LLM 2–10 с.
+
 ## Память диалога — bot/store.ts
 
 - Upstash Redis по REST API: протокол — транспорт `bot/redis-rest.ts` (см.
