@@ -47,6 +47,15 @@ const LOG_MODULE = "store";
 // Дефолт таймаута одного REST-запроса.
 const DEFAULT_TIMEOUT_MS = 5_000;
 
+// Тело ошибки Upstash диагностически ценно: текст вида «ERR unsupported arg
+// type…» указывает прямо на несовместимый формат запроса, а секретов не
+// содержит — в warn идёт сжатый сниппет. Пустое тело (CDN/прокси без текста)
+// строку не засоряет.
+function errorBody(body: string): string {
+  const flat = body.replace(/\s+/g, " ").trim();
+  return flat ? ` — тело: ${flat.length > 200 ? `${flat.slice(0, 200)}…` : flat}` : "";
+}
+
 /**
  * Фабрика транспорта: возвращает { command, pipeline }. config/fetch/timeout
  * резолвятся на каждый вызов command/pipeline; log — один инстанс на фабрику:
@@ -93,7 +102,7 @@ export function createRedisRest(deps: RedisRestDeps = {}) {
         log.warnThrottled(
           LOG_MODULE,
           "rest-status",
-          `Upstash REST вернул ${response.status} — работаю без истории`,
+          `Upstash REST вернул ${response.status}${errorBody(await response.text())} — работаю без истории`,
         );
         return null;
       }
@@ -155,7 +164,7 @@ export function createRedisRest(deps: RedisRestDeps = {}) {
         log.warnThrottled(
           LOG_MODULE,
           "rest-status",
-          `Upstash REST вернул ${response.status} (pipeline) — работаю без лимитера`,
+          `Upstash REST вернул ${response.status} (pipeline)${errorBody(await response.text())} — работаю без лимитера`,
         );
         return null;
       }

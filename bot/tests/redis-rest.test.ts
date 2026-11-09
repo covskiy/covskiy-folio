@@ -109,7 +109,23 @@ describe("command: одиночная REST-команда", () => {
     });
 
     await expect(redis.command(["get", "k"])).resolves.toBeNull();
-    expect(warns).toEqual(["[store] Upstash REST вернул 500 — работаю без истории"]);
+    expect(warns).toEqual(["[store] Upstash REST вернул 500 — тело: boom — работаю без истории"]);
+  });
+
+  it("не-2xx с пустым телом → warn без части «тело:»", async () => {
+    const { log, warns } = makeLog();
+    const fetchMock = vi.fn(async () => new Response("", { status: 503 }));
+    const redis = createRedisRest({
+      config: createConfig({
+        UPSTASH_REDIS_REST_URL: REDIS_URL,
+        UPSTASH_REDIS_REST_TOKEN: "tok",
+      }),
+      fetchImpl: fetchMock as unknown as typeof fetch,
+      log,
+    });
+
+    await expect(redis.command(["get", "k"])).resolves.toBeNull();
+    expect(warns).toEqual(["[store] Upstash REST вернул 503 — работаю без истории"]);
   });
 
   it("200 c {error} → null + warn rest-error", async () => {
@@ -296,7 +312,26 @@ describe("pipeline: массив команд одним POST", () => {
     });
 
     await expect(redis.pipeline([["incr", "k"]])).resolves.toBeNull();
-    expect(warns).toEqual(["[store] Upstash REST вернул 503 (pipeline) — работаю без лимитера"]);
+    expect(warns).toEqual([
+      "[store] Upstash REST вернул 503 (pipeline) — тело: boom — работаю без лимитера",
+    ]);
+  });
+
+  it("длинное тело ошибки → сниппет 200 символов с многоточием", async () => {
+    const { log, warns } = makeLog();
+    const fetchMock = vi.fn(async () => new Response("x".repeat(500), { status: 400 }));
+    const redis = createRedisRest({
+      config: createConfig({
+        UPSTASH_REDIS_REST_URL: REDIS_URL,
+        UPSTASH_REDIS_REST_TOKEN: "tok",
+      }),
+      fetchImpl: fetchMock as unknown as typeof fetch,
+      log,
+    });
+
+    await expect(redis.pipeline([["incr", "k"]])).resolves.toBeNull();
+    const snippet = (warns[0] ?? "").split("— тело: ")[1]?.split(" — работаю")[0] ?? "";
+    expect(snippet).toBe(`${"x".repeat(200)}…`);
   });
 
   it("сеть падает исключением → null + warn network без лимитера", async () => {
