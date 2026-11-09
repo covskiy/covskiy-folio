@@ -46,6 +46,10 @@ const UNKNOWN_COMMAND_TEXT = "Не знаю такую команду. Набе�
 
 const CALLBACK_ERROR_TEXT = "Кнопка устарела. Набери /start — дам свежие подсказки.";
 
+// Общий fallback для message- и callback-веток: при сбое отправки ответа
+// пользователь должен увидеть хотя бы это, а не тишину.
+const TECHNICAL_TROUBLE_TEXT = "У меня технические неполадки — попробуй спросить позже.";
+
 const RATE_LIMIT_TEXT =
   "Слишком много вопросов подряд — сделай небольшую паузу и попробуй снова 🙂";
 
@@ -220,13 +224,27 @@ export function createTelegramWebhookHandler(deps: TelegramWebhookHandlerDeps) {
 
     if (!entry) {
       // Битый формат или индекс вне диапазона: гасим спиннер с пояснением,
-      // историю и чат не трогаем.
-      await tg.answerCallbackQuery(callback.id, CALLBACK_ERROR_TEXT);
+      // историю и чат не трогаем. Ack — косметика: просроченный id нажатия
+      // здесь ронять ветку нечему — отвечать всё равно нечего.
+      try {
+        await tg.answerCallbackQuery(callback.id, CALLBACK_ERROR_TEXT);
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error);
+        log.warn("telegram-webhook", `не смог ack «кнопка устарела» (${reason})`);
+      }
       return;
     }
 
     // Спиннер гасим сразу: пользователь не должен ждать LLM с «часиками».
-    await tg.answerCallbackQuery(callback.id);
+    // Но ack до ответа — косметика: просроченный/повторный callback бросает
+    // «query is too old…», и без глотания пользователь не получил бы ответа
+    // вовсе (дефект №1 из docs/diagnosis.md §10).
+    try {
+      await tg.answerCallbackQuery(callback.id);
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      log.warn("telegram-webhook", `не смог погасить спиннер (${reason})`);
+    }
 
     const message = callback.message;
     if (!message) return; // ответить некуда — не наш сценарий, апдейт просто отброшен
@@ -298,8 +316,15 @@ export function createTelegramWebhookHandler(deps: TelegramWebhookHandlerDeps) {
     }
 
     if (update.callback_query) {
+      const callback = update.callback_query;
       try {
-        await handleCallbackQuery(update.callback_query);
+        // Как в message-ветке: нажатия должны быть видны в debug-логе, иначе
+        // «кнопка молчит» неотличима от «событие не доставлено» (дефект №3).
+        log.debug(
+          "telegram-webhook",
+          `апдейт ${update.update_id ?? "—"} callback «${callback.data ?? "—"}» от ${callback.message?.chat.id ?? "—"}`,
+        );
+        await handleCallbackQuery(callback);
         // Маркер только после успешной обработки: если она бросила — маркера нет,
         // и повтор дойдёт до LLM.
         if (seenKey) await store.markSeen(seenKey, config.telegram.seenTtlSeconds);
@@ -310,9 +335,20 @@ export function createTelegramWebhookHandler(deps: TelegramWebhookHandlerDeps) {
         );
         // Спиннер всё равно надо погасить, иначе он крутится до таймаута Telegram.
         try {
-          await tg.answerCallbackQuery(update.callback_query.id);
+          await tg.answerCallbackQuery(callback.id);
         } catch {
           // Уже отвечен или сеть недоступна — не критично.
+        }
+        // Fallback как в message-ветке: сбой отправки ответа не должен выглядеть
+        // для пользователя тишиной (дефект №2). chatId может отсутствовать
+        // (inline-режим — не наш сценарий, но guard дешевле предположения).
+        const chatId = callback.message?.chat.id;
+        if (chatId !== undefined) {
+          try {
+            await tg.sendMessage(chatId, TECHNICAL_TROUBLE_TEXT);
+          } catch {
+            // Ответить не вышло — Telegram сам повторит доставку update
+          }
         }
       }
       // Telegram ждёт 2xx, иначе будет повторять отправку update
@@ -338,10 +374,7 @@ export function createTelegramWebhookHandler(deps: TelegramWebhookHandlerDeps) {
       } catch (error) {
         log.error("telegram-webhook", error instanceof Error ? error.message : String(error));
         try {
-          await tg.sendMessage(
-            message.chat.id,
-            "У меня технические неполадки — попробуй спросить позже.",
-          );
+          await tg.sendMessage(message.chat.id, TECHNICAL_TROUBLE_TEXT);
         } catch {
           // Ответить не вышло — Telegram сам повторит доставку update
         }

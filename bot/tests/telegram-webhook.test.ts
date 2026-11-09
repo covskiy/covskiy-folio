@@ -468,6 +468,65 @@ describe("handleTelegramWebhook", () => {
     expect(brain.answer).not.toHaveBeenCalled();
   });
 
+  it("ack валидной кнопки упал (query is too old) → ответ всё равно ушёл, warn в лог", async () => {
+    vi.stubEnv("TELEGRAM_WEBHOOK_SECRET", SECRET);
+    const { handle, events, tg, brain, log } = makeHarness();
+    // Telegram повторяет апдейт, id нажатия уже просрочен — ack бросает
+    tg.answerCallbackQuery.mockRejectedValueOnce(
+      new Error("query is too old and response timeout expired or query ID is invalid"),
+    );
+
+    const res = await handle(updateWithCallback("ask:pricing", 10));
+
+    expect(res.status).toBe(200);
+    // Вопрос ушёл в brain и ответ дошёл до пользователя — ack не уронил ветку
+    expect(brain.answer).toHaveBeenCalledWith("Стоимость", []);
+    expect(tg.sendMessage).toHaveBeenCalledWith(42, "ответ brain", undefined);
+    // Дальше обычный порядок: лимит → … → снять клавиатуру. Первого
+    // "tg:answerCallbackQuery" в журнале нет: mockRejectedValueOnce подменяет
+    // имплементацию целиком, фейк не успевает записать событие
+    expect(events).toEqual([
+      "limit:hit",
+      "tg:sendChatAction",
+      "store:getHistory",
+      "brain:answer",
+      "tg:sendMessage",
+      "store:appendHistory",
+      "tg:editMessageText",
+    ]);
+    expect(log.warn).toHaveBeenCalledWith(
+      "telegram-webhook",
+      expect.stringContaining("не смог погасить спиннер"),
+    );
+  });
+
+  it("callback: отправка ответа упала → fallback-сообщение о неполадках", async () => {
+    vi.stubEnv("TELEGRAM_WEBHOOK_SECRET", SECRET);
+    const { handle, events, tg } = makeHarness({ replySendFailsText: "ответ brain" });
+
+    const res = await handle(updateWithCallback("ask:services", 10));
+
+    expect(res.status).toBe(200);
+    // Первая отправка упала → catch: погасить спиннер и отправить fallback
+    // (fallback-вызов без reply_markup — в mock.calls ровно два аргумента)
+    expect(tg.sendMessage).toHaveBeenCalledTimes(2);
+    expect(lastSend(tg)).toEqual([42, "У меня технические неполадки — попробуй спросить позже."]);
+    // Клавиатуру со старого сообщения не снимаем: ответ не отправлен, повтор
+    // Telegram дойдёт до LLM и сработает как новое нажатие
+    expect(tg.editMessageText).not.toHaveBeenCalled();
+    // Пара в историю не попала (порядок «отправить → записать»)
+    expect(events).toEqual([
+      "tg:answerCallbackQuery",
+      "limit:hit",
+      "tg:sendChatAction",
+      "store:getHistory",
+      "brain:answer",
+      "tg:sendMessage",
+      "tg:answerCallbackQuery",
+      "tg:sendMessage",
+    ]);
+  });
+
   it("update без текста — просто 200 без вызовов", async () => {
     vi.stubEnv("TELEGRAM_WEBHOOK_SECRET", SECRET);
     const { handle, tg, brain, store, limit } = makeHarness();
