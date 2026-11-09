@@ -222,6 +222,21 @@ export function createTelegramWebhookHandler(deps: TelegramWebhookHandlerDeps) {
     }
   }
 
+  // Кнопка одноразовая: клавиатура снимается СРАЗУ после нажатия, до ответа.
+  // Окно «клик → отправка ответа» — единственный шанс даблклика получить два
+  // callback_query и два ответа (дедуп по update_id их не различает — это
+  // разные апдейты, прод-инцидент 2026-11-10); убитая клавиатура делает
+  // второй клик невозможным. Косметика — сбой не критичен.
+  async function dropKeyboard(message: TgMessage): Promise<void> {
+    if (message.text === undefined) return;
+    try {
+      await tg.editMessageText(message.chat.id, message.message_id, message.text);
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      log.warn("telegram-webhook", `не смог снять клавиатуру (${reason})`);
+    }
+  }
+
   async function handleCallbackQuery(callback: TgCallbackQuery): Promise<void> {
     const match = CALLBACK_PATTERN.exec(callback.data ?? "");
     const entries = knowledge.load();
@@ -232,16 +247,21 @@ export function createTelegramWebhookHandler(deps: TelegramWebhookHandlerDeps) {
     const entry =
       id !== null && entries !== null ? entries.find((item) => item.id === id) : undefined;
 
+    const message = callback.message;
+    if (!message) return; // ответить некуда — не наш сценарий, апдейт просто отброшен
+
     if (!entry) {
       // Битый формат или индекс вне диапазона: гасим спиннер с пояснением,
       // историю и чат не трогаем. Ack — косметика: просроченный id нажатия
-      // здесь ронять ветку нечему — отвечать всё равно нечего.
+      // здесь ронять ветку нечему — отвечать всё равно нечего. Клавиатуру
+      // снимаем тоже — иначе мёртвые кнопки тостят при каждом клике вечно.
       try {
         await tg.answerCallbackQuery(callback.id, CALLBACK_ERROR_TEXT);
       } catch (error) {
         const reason = error instanceof Error ? error.message : String(error);
         log.warn("telegram-webhook", `не смог ack «кнопка устарела» (${reason})`);
       }
+      await dropKeyboard(message);
       return;
     }
 
@@ -256,22 +276,10 @@ export function createTelegramWebhookHandler(deps: TelegramWebhookHandlerDeps) {
       log.warn("telegram-webhook", `не смог погасить спиннер (${reason})`);
     }
 
-    const message = callback.message;
-    if (!message) return; // ответить некуда — не наш сценарий, апдейт просто отброшен
+    await dropKeyboard(message);
 
     // Нажатие кнопки обрабатываем как обычный вопрос (с историей).
     await answerAsQuestion(message.chat.id, entry.title);
-
-    // Кнопка одноразовая: снимаем клавиатуру со старого сообщения /start,
-    // чтобы повторные нажатия не засоряли диалог. Косметика — сбой не критичен.
-    if (message.text !== undefined) {
-      try {
-        await tg.editMessageText(message.chat.id, message.message_id, message.text);
-      } catch (error) {
-        const reason = error instanceof Error ? error.message : String(error);
-        log.warn("telegram-webhook", `не смог снять клавиатуру (${reason})`);
-      }
-    }
   }
 
   /**

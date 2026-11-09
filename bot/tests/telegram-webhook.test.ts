@@ -432,15 +432,16 @@ describe("handleTelegramWebhook", () => {
     const res = await handle(updateWithCallback("ask:pricing", 10));
 
     expect(res.status).toBe(200);
+    // Клавиатура снимается сразу после ack, до ответа — окно даблклика закрыто
     expect(events).toEqual([
       "tg:answerCallbackQuery",
+      "tg:editMessageText",
       "limit:hit",
       "tg:sendChatAction",
       "store:getHistory",
       "brain:answer",
       "tg:sendMessage",
       "store:appendHistory",
-      "tg:editMessageText",
     ]);
     expect(tg.answerCallbackQuery).toHaveBeenCalledWith("cbq-1");
     // Вопрос кнопки — title записи по её id, уходит в brain как обычная реплика
@@ -498,17 +499,17 @@ describe("handleTelegramWebhook", () => {
     // Вопрос ушёл в brain и ответ дошёл до пользователя — ack не уронил ветку
     expect(brain.answer).toHaveBeenCalledWith("Стоимость", []);
     expect(tg.sendMessage).toHaveBeenCalledWith(42, "ответ brain", undefined);
-    // Дальше обычный порядок: лимит → … → снять клавиатуру. Первого
+    // Дальше: снять клавиатуру → лимит → … → отправить. Первого
     // "tg:answerCallbackQuery" в журнале нет: mockRejectedValueOnce подменяет
     // имплементацию целиком, фейк не успевает записать событие
     expect(events).toEqual([
+      "tg:editMessageText",
       "limit:hit",
       "tg:sendChatAction",
       "store:getHistory",
       "brain:answer",
       "tg:sendMessage",
       "store:appendHistory",
-      "tg:editMessageText",
     ]);
     expect(log.warn).toHaveBeenCalledWith(
       "telegram-webhook",
@@ -527,12 +528,13 @@ describe("handleTelegramWebhook", () => {
     // (fallback-вызов без reply_markup — в mock.calls ровно два аргумента)
     expect(tg.sendMessage).toHaveBeenCalledTimes(2);
     expect(lastSend(tg)).toEqual([42, "У меня технические неполадки — попробуй спросить позже."]);
-    // Клавиатуру со старого сообщения не снимаем: ответ не отправлен, повтор
-    // Telegram дойдёт до LLM и сработает как новое нажатие
-    expect(tg.editMessageText).not.toHaveBeenCalled();
+    // Клавиатура уже снята (до ответа) — повторный клик по мёртвым кнопкам
+    // невозможен, повтор апдейта дойдёт до LLM как обычное нажатие
+    expect(tg.editMessageText).toHaveBeenCalledTimes(1);
     // Пара в историю не попала (порядок «отправить → записать»)
     expect(events).toEqual([
       "tg:answerCallbackQuery",
+      "tg:editMessageText",
       "limit:hit",
       "tg:sendChatAction",
       "store:getHistory",
@@ -541,6 +543,18 @@ describe("handleTelegramWebhook", () => {
       "tg:answerCallbackQuery",
       "tg:sendMessage",
     ]);
+  });
+
+  it("битый callback_data: клавиатура тоже снята — мёртвые кнопки не тостят вечно", async () => {
+    vi.stubEnv("TELEGRAM_WEBHOOK_SECRET", SECRET);
+    const { handle, tg, brain } = makeHarness();
+
+    const res = await handle(updateWithCallback("ask:999"));
+
+    expect(res.status).toBe(200);
+    expect(tg.answerCallbackQuery).toHaveBeenCalledWith("cbq-1", expect.any(String));
+    expect(tg.editMessageText).toHaveBeenCalledWith(42, 10, "Привет!");
+    expect(brain.answer).not.toHaveBeenCalled();
   });
 
   it("my_chat_member kicked → история чата очищена, Telegram API не тронут", async () => {
@@ -622,17 +636,17 @@ describe("handleTelegramWebhook: с фейковым store (история и д
     const res = await handle(updateWithCallback("ask:services", 10));
 
     expect(res.status).toBe(200);
-    // Полный порядок: спиннер → лимит → «печатает…» → история → brain →
-    // отправить → записать → снять клавиатуру
+    // Полный порядок: спиннер → снять клавиатуру → лимит → «печатает…» →
+    // история → brain → отправить → записать
     expect(events).toEqual([
       "tg:answerCallbackQuery",
+      "tg:editMessageText",
       "limit:hit",
       "tg:sendChatAction",
       "store:getHistory",
       "brain:answer",
       "tg:sendMessage",
       "store:appendHistory",
-      "tg:editMessageText",
     ]);
     // brain получил старую историю и вопрос кнопки — title записи по её id
     expect(brain.answer).toHaveBeenCalledWith("Услуги", [
