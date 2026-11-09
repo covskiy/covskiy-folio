@@ -149,7 +149,7 @@ describe("handleTelegramAdmin", () => {
     expect(tg.setWebhook).toHaveBeenCalledWith({
       url: "http://localhost/api/telegram",
       secret_token: SECRET,
-      allowed_updates: ["message", "callback_query"],
+      allowed_updates: ["message", "callback_query", "my_chat_member"],
     });
   });
 

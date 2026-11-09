@@ -69,9 +69,19 @@ interface TgCallbackQuery {
   message?: TgMessage;
 }
 
+// my_chat_member — статус самого бота в чате (Bot API ChatMemberUpdated).
+// Для личного чата важны два статуса: kicked — пользователь заблокировал бота,
+// member — разблокировал. Остальные поля ChatMemberUpdated не нужны.
+interface TgMyChatMember {
+  chat: TgMessage["chat"];
+  old_chat_member: { status: string };
+  new_chat_member: { status: string };
+}
+
 interface TgUpdate {
   message?: TgMessage;
   callback_query?: TgCallbackQuery;
+  my_chat_member?: TgMyChatMember;
   // Telegram всегда шлёт update_id у известных нам типов апдейтов; отсутствие
   // (неизвестный тип или битый JSON) — не повод ронять обработку.
   update_id?: number;
@@ -267,12 +277,14 @@ export function createTelegramWebhookHandler(deps: TelegramWebhookHandlerDeps) {
   /**
    * Обработчик /api/telegram — все апдейты Telegram-бота: свободный текст → ответ
    * «мозга» с серверной историей, команды /start /help /reset /about, нажатия
-   * inline-кнопок (callback_data вида ask:{id} — slug записи справки).
+   * inline-кнопок (callback_data вида ask:{id} — slug записи справки), статус
+   * самого бота (my_chat_member: блокировка чистит историю заблокированного чата).
    *
    * Auth: заголовок x-telegram-bot-api-secret-token должен совпасть с
    * TELEGRAM_WEBHOOK_SECRET — иначе 401. Всегда возвращает 2xx после обработки,
    * иначе Telegram будет повторять доставку update; ошибки обработчика глотаются
-   * с логом (пользователю уходит сообщение о неполадках, спиннер кнопки гасится).
+   * с логом (в message- и callback-ветках пользователь получает fallback-сообщение
+   * о неполадках, спиннер кнопки гасится).
    * Апдейты без текста (фото, стикеры) грациозно игнорируются.
    *
    * Env: TELEGRAM_WEBHOOK_SECRET (без него все запросы — 401); остальные —
@@ -350,6 +362,34 @@ export function createTelegramWebhookHandler(deps: TelegramWebhookHandlerDeps) {
             // Ответить не вышло — Telegram сам повторит доставку update
           }
         }
+      }
+      // Telegram ждёт 2xx, иначе будет повторять отправку update
+      return Response.json({ ok: true });
+    }
+
+    // Блокировка/разблокировка бота (Telegram присылает статус самого бота).
+    // Это не реплика диалога: Telegram API не трогаем, лимит и историю ответов
+    // не используем. Полезное действие одно — заблокированный чат чистим:
+    // хвост диалога мёртвого чата не должен доживать в Redis до конца TTL.
+    const myChatMember = update.my_chat_member;
+    if (myChatMember) {
+      try {
+        const chatId = myChatMember.chat.id;
+        const status = myChatMember.new_chat_member.status;
+        if (status === "kicked") {
+          log.warn("telegram-webhook", `чат ${chatId} заблокировал бота — очищаю историю`);
+          await store.clearHistory(tgKey(chatId));
+        } else if (status === "member") {
+          log.debug("telegram-webhook", `чат ${chatId} разблокировал бота`);
+        } else {
+          log.debug("telegram-webhook", `чат ${chatId}: статус бота → ${status}`);
+        }
+        if (seenKey) await store.markSeen(seenKey, config.telegram.seenTtlSeconds);
+      } catch (error) {
+        log.error(
+          "telegram-webhook",
+          `my_chat_member: ${error instanceof Error ? error.message : String(error)}`,
+        );
       }
       // Telegram ждёт 2xx, иначе будет повторять отправку update
       return Response.json({ ok: true });

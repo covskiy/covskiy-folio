@@ -50,6 +50,22 @@ function updateWithCallback(data: string, messageId = 10): Request {
   });
 }
 
+function updateWithMyChatMember(status: string, chatId = 42): Request {
+  return new Request(URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...SECRET_HEADER },
+    // update_id задан намеренно: у события блокировки проверяется и дедупликация
+    body: JSON.stringify({
+      update_id: 30,
+      my_chat_member: {
+        chat: { id: chatId },
+        old_chat_member: { status: status === "kicked" ? "member" : "kicked" },
+        new_chat_member: { status },
+      },
+    }),
+  });
+}
+
 interface HarnessOptions {
   /** Ответ fakeBrain. */
   llmText?: string;
@@ -525,6 +541,41 @@ describe("handleTelegramWebhook", () => {
       "tg:answerCallbackQuery",
       "tg:sendMessage",
     ]);
+  });
+
+  it("my_chat_member kicked → история чата очищена, Telegram API не тронут", async () => {
+    vi.stubEnv("TELEGRAM_WEBHOOK_SECRET", SECRET);
+    const { handle, events, store, tg, brain, limit, log } = makeHarness();
+
+    const res = await handle(updateWithMyChatMember("kicked"));
+
+    expect(res.status).toBe(200);
+    expect(store.clearHistory).toHaveBeenCalledWith("chat:tg:42");
+    expect(tg.sendMessage).not.toHaveBeenCalled();
+    expect(brain.answer).not.toHaveBeenCalled();
+    expect(limit).not.toHaveBeenCalled();
+    // Дедупликация ведётся как у остальных апдейтов: isSeen до обработки,
+    // markSeen после
+    expect(events).toEqual(["store:isSeen", "store:clearHistory", "store:markSeen"]);
+    expect(log.warn).toHaveBeenCalledWith(
+      "telegram-webhook",
+      expect.stringContaining("заблокировал бота"),
+    );
+  });
+
+  it("my_chat_member member (разблокировка) → история не трогается", async () => {
+    vi.stubEnv("TELEGRAM_WEBHOOK_SECRET", SECRET);
+    const { handle, events, store, log } = makeHarness();
+
+    const res = await handle(updateWithMyChatMember("member"));
+
+    expect(res.status).toBe(200);
+    expect(store.clearHistory).not.toHaveBeenCalled();
+    expect(events).toEqual(["store:isSeen", "store:markSeen"]);
+    expect(log.debug).toHaveBeenCalledWith(
+      "telegram-webhook",
+      expect.stringContaining("разблокировал"),
+    );
   });
 
   it("update без текста — просто 200 без вызовов", async () => {

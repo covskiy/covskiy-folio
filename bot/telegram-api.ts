@@ -84,6 +84,8 @@ export interface TgWebhookInfo {
   last_error_date?: number;
   /** Текст последней ошибки доставки. */
   last_error_message?: string;
+  /** Фильтр типов событий из setWebhook; поля нет, если фильтр не задавался. */
+  allowed_updates?: string[];
 }
 
 // Лимит Telegram на текст одного сообщения; длинные ответы brain режем на части.

@@ -134,8 +134,11 @@ export function createTelegramAdminHandler(deps: TelegramAdminHandlerDeps) {
         const result = await tg.setWebhook({
           url,
           secret_token: secret,
-          // callback_query нужен для кнопок-подсказок на /start.
-          allowed_updates: ["message", "callback_query"],
+          // callback_query — кнопки-подсказки на /start и dumb-fallback;
+          // my_chat_member — блокировка бота: чистим историю заблокированного чата.
+          // Фильтр хранится на стороне Telegram: после правки списка — перерегистрация
+          // (POST /api/telegram-setup), деплой сам её не делает.
+          allowed_updates: ["message", "callback_query", "my_chat_member"],
         });
         log.info("telegram-admin", `вебхук установлен: ${url}`);
         return Response.json({ ok: true, result });
