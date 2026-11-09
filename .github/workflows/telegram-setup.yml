@@ -1,0 +1,47 @@
+# Курьер для /api/telegram-setup. Раннер GitHub Actions сидит за рубежом, поэтому
+# *.vercel.app для него доступен — в отличие от машины разработчика, откуда подсети
+# vercel.app дропаются на TSPU (IP-блок, локальные обходчики не помогают).
+# Каждый POST — только по явному запуску из веб-морды: workflow_dispatch без cron.
+name: telegram-setup
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "Что сделать: get | post | both"
+        required: true
+        default: "get"
+        type: choice
+        options:
+          - get
+          - post
+          - both
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  gateway:
+    runs-on: ubuntu-latest
+    env:
+      SETUP_URL: https://covskiy-folio.vercel.app/api/telegram-setup
+      TELEGRAM_WEBHOOK_SECRET: ${{ secrets.TELEGRAM_WEBHOOK_SECRET }}
+    steps:
+      - name: GET — состояние вебхука
+        if: inputs.action == 'get' || inputs.action == 'both'
+        run: |
+          curl -sS --fail-with-body --max-time 30 "$SETUP_URL" \
+            -H "x-telegram-bot-api-secret-token: $TELEGRAM_WEBHOOK_SECRET"
+
+      - name: POST — перерегистрация вебхука
+        if: inputs.action == 'post' || inputs.action == 'both'
+        run: |
+          curl -sS --fail-with-body --max-time 30 -X POST "$SETUP_URL" \
+            -H "x-telegram-bot-api-secret-token: $TELEGRAM_WEBHOOK_SECRET"
+
+      - name: GET — контроль после POST
+        if: inputs.action == 'both'
+        run: |
+          curl -sS --fail-with-body --max-time 30 "$SETUP_URL" \
+            -H "x-telegram-bot-api-secret-token: $TELEGRAM_WEBHOOK_SECRET"
