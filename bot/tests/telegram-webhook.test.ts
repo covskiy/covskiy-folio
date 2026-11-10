@@ -392,6 +392,39 @@ describe("handleTelegramWebhook", () => {
     ]);
   });
 
+  it("«печатает» повторяется, пока brain отвечает, и гасится после отправки ответа", async () => {
+    vi.stubEnv("TELEGRAM_WEBHOOK_SECRET", SECRET);
+    vi.useFakeTimers();
+    try {
+      const { handle, events, brain, tg } = makeHarness();
+      // Brain «думает» 10 с: старый одиночный typing уже погас бы на 5-й секунде.
+      brain.answer.mockImplementationOnce(async () => {
+        events.push("brain:answer");
+        await new Promise((resolve) => setTimeout(resolve, 10_000));
+        return { text: "медленный ответ", mode: "llm" };
+      });
+
+      const pending = handle(updateWithText("медленный вопрос"));
+
+      // 4.5 с и 9 с: повторы индикатора поверх первого вызова (t=0) —
+      // всё ещё до ответа brain (10 с).
+      await vi.advanceTimersByTimeAsync(4_500);
+      await vi.advanceTimersByTimeAsync(4_500);
+      expect(tg.sendChatAction).toHaveBeenCalledTimes(3);
+
+      // 10 с: brain ответил — цикл гасится abort'ом, повторов после sendMessage нет.
+      await vi.advanceTimersByTimeAsync(1_000);
+      await pending;
+      expect(tg.sendChatAction).toHaveBeenCalledTimes(3);
+      expect(events.lastIndexOf("tg:sendChatAction")).toBeLessThan(
+        events.indexOf("tg:sendMessage"),
+      );
+      expect(events[events.length - 1]).toBe("store:appendHistory");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("dumb-fallback с подсказками → sendMessage получает inline-клавиатуру с ask:{id}", async () => {
     vi.stubEnv("TELEGRAM_WEBHOOK_SECRET", SECRET);
     const { handle, tg } = makeHarness({

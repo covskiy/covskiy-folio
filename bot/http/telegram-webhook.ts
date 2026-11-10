@@ -53,6 +53,11 @@ const TECHNICAL_TROUBLE_TEXT = "У меня технические непола�
 const RATE_LIMIT_TEXT =
   "Слишком много вопросов подряд — сделай небольшую паузу и попробуй снова 🙂";
 
+// Интервал повторов индикатора «печатает…»: Telegram держит статус ~5 с,
+// обновляем чаще, чтобы не мигал. Константа, не env: окно фиксировано Bot API,
+// настраивать нечего.
+const TYPING_REFRESH_MS = 4_500;
+
 // TTL маркера дедупликации — env TELEGRAM_SEEN_TTL_SECONDS (дефолт 3600,
 // слайс telegram в config.ts): час с запасом перекрывает ретраи Telegram
 // по одному апдейту, ключи чистятся сами.
@@ -136,6 +141,41 @@ export function createTelegramWebhookHandler(deps: TelegramWebhookHandlerDeps) {
     };
   }
 
+  // Сон, прерываемый abort: typing-цикл гасится сразу после ответа, а не
+  // досыпает свои 4.5 с после него. setTimeout в цикле, а не setInterval:
+  // после abort не остаётся живых таймеров.
+  function sleep(ms: number, signal: AbortSignal): Promise<void> {
+    return new Promise((resolve) => {
+      const timer = setTimeout(resolve, ms);
+      signal.addEventListener(
+        "abort",
+        () => {
+          clearTimeout(timer);
+          resolve();
+        },
+        { once: true },
+      );
+    });
+  }
+
+  // Повторяющийся индикатор «печатает…»: один sendChatAction Telegram держит
+  // ~5 с, а цепочка LLM отвечает до LLM_TOTAL_TIMEOUT_MS — без повторов
+  // посетитель большую часть ожидания смотрит на мёртвый чат. Цикл живёт
+  // параллельно основному потоку и гасится abort'ом после отправки ответа;
+  // сбои sendChatAction — косметика. Осознанно без await на цикле: зависший
+  // in-flight sendChatAction (tgCall даёт ему 10 с) не должен задерживать
+  // возврат 2xx Telegram'у — цикл безотказный, жить ему осталось недолго.
+  async function refreshTyping(chatId: number, signal: AbortSignal): Promise<void> {
+    while (!signal.aborted) {
+      try {
+        await tg.sendChatAction(chatId, "typing");
+      } catch {
+        // Индикатор — косметика, не повод терять ответ.
+      }
+      await sleep(TYPING_REFRESH_MS, signal);
+    }
+  }
+
   // Единый поток для свободного текста и нажатой кнопки: лимит чата → индикатор
   // «печатает…» → история из Redis → ответ brain → отправка → пара вопрос/ответ
   // в историю. Лимитер до истории: шторм вопросов одного чата дешевле остановить
@@ -154,34 +194,34 @@ export function createTelegramWebhookHandler(deps: TelegramWebhookHandlerDeps) {
       await tg.sendMessage(chatId, RATE_LIMIT_TEXT);
       return;
     }
-    // Индикатор «печатает…» до похода в Redis/LLM; один вызов без таймеров и
-    // повторов — LLM обычно укладывается в окно ~5 с, повторять значило бы
-    // тратить время инвокации.
+    // Индикатор «печатает…» до похода в Redis/LLM; статус обновляется циклом
+    // refreshTyping (см. её комментарий), гасится после отправки ответа.
+    const typingDone = new AbortController();
+    refreshTyping(chatId, typingDone.signal);
     try {
-      await tg.sendChatAction(chatId, "typing");
-    } catch {
-      // Индикатор — косметика, не повод терять ответ.
+      const key = tgKey(chatId);
+      const history = await store.getHistory(key);
+      const { text: reply, suggestions } = await brain.answer(question, history);
+      // Подсказки dumb-fallback → inline-клавиатура с callback_data ask:{id}:
+      // клик идёт в существующий handleCallbackQuery, как нажатие кнопки /start.
+      // Остальные режимы (llm-ответ, уверенный dumb, недоступная справка) —
+      // без клавиатуры: ответу есть что сказать и без «что спросить дальше».
+      // В историю пишется только текст: подсказки — UI-слой, не реплика диалога.
+      const keyboard: TgInlineKeyboardMarkup | undefined = suggestions?.length
+        ? {
+            inline_keyboard: suggestions.map(({ id, title }) => [
+              { text: title, callback_data: `ask:${id}` },
+            ]),
+          }
+        : undefined;
+      await tg.sendMessage(chatId, reply, keyboard);
+      await store.appendHistory(key, [
+        { role: "user", content: question },
+        { role: "assistant", content: reply },
+      ]);
+    } finally {
+      typingDone.abort();
     }
-    const key = tgKey(chatId);
-    const history = await store.getHistory(key);
-    const { text: reply, suggestions } = await brain.answer(question, history);
-    // Подсказки dumb-fallback → inline-клавиатура с callback_data ask:{id}:
-    // клик идёт в существующий handleCallbackQuery, как нажатие кнопки /start.
-    // Остальные режимы (llm-ответ, уверенный dumb, недоступная справка) —
-    // без клавиатуры: ответу есть что сказать и без «что спросить дальше».
-    // В историю пишется только текст: подсказки — UI-слой, не реплика диалога.
-    const keyboard: TgInlineKeyboardMarkup | undefined = suggestions?.length
-      ? {
-          inline_keyboard: suggestions.map(({ id, title }) => [
-            { text: title, callback_data: `ask:${id}` },
-          ]),
-        }
-      : undefined;
-    await tg.sendMessage(chatId, reply, keyboard);
-    await store.appendHistory(key, [
-      { role: "user", content: question },
-      { role: "assistant", content: reply },
-    ]);
   }
 
   // /about берём запись с пометкой about: true — явный признак в контенте
