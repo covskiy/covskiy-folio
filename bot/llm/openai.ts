@@ -59,8 +59,10 @@ export function createOpenAiAdapter(deps: LlmAdapterDeps = {}): LlmAdapter {
     return text;
   }
 
-  // Дешёвая проверка доступности: сначала GET /models (не тратит токены), при
-  // отказе — минимальный chat/completions (не все провайдеры отдают /models).
+  // Дешёвая проверка доступности. Без ключа — сначала GET /models (не тратит
+  // токены), при отказе — минимальный chat/completions. С ключом — сразу
+  // минимальный запрос: публичный /models не проверяет Bearer (OpenRouter
+  // отвечает 200 и с битым ключом), health рисовал «ok», а чат ловил 401.
   // Никогда не бросает: раздел health должен жить даже при мёртвом провайдере.
   async function probe(
     settings: LlmProviderSettings,
@@ -71,14 +73,15 @@ export function createOpenAiAdapter(deps: LlmAdapterDeps = {}): LlmAdapter {
       ? { Authorization: `Bearer ${settings.apiKey}` }
       : {};
 
-    try {
-      const response = await doFetch(`${settings.baseUrl}/models`, {
-        headers,
-        signal: AbortSignal.timeout(opts.timeoutMs),
-      });
-      if (response.ok) return { ok: true, detail: "GET /models" };
-    } catch {
-      // /models может не существовать или провайдер лежит — пробуем сам endpoint.
+    if (!settings.apiKey) {
+      try {
+        const response = await doFetch(`${settings.baseUrl}/models`, {
+          signal: AbortSignal.timeout(opts.timeoutMs),
+        });
+        if (response.ok) return { ok: true, detail: "GET /models" };
+      } catch {
+        // /models может не существовать или провайдер лежит — пробуем сам endpoint.
+      }
     }
 
     try {

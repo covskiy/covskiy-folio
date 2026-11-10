@@ -692,30 +692,52 @@ describe("createOpenAiAdapter", () => {
     ).rejects.toThrow("LLM вернул пустой ответ");
   });
 
-  it("probe: /models ок → ok:true, detail «GET /models», Bearer уходит", async () => {
+  it("probe без ключа: /models ок → ok:true, detail «GET /models»", async () => {
     const fetchMock: FetchMock = vi.fn(async () => new Response("[]", { status: 200 }));
     const adapter = createOpenAiAdapter({ fetchImpl: fetchMock as unknown as typeof fetch });
 
-    await expect(adapter.probe(settings, { timeoutMs: 500 })).resolves.toEqual({
+    await expect(
+      adapter.probe({ ...settings, apiKey: undefined }, { timeoutMs: 500 }),
+    ).resolves.toEqual({
       ok: true,
       detail: "GET /models",
     });
     const [url, init] = fetchMock.mock.calls[0];
     expect(String(url)).toBe("http://adapter.test/v1/models");
     expect(init?.method).toBeUndefined(); // GET, не тратит токены
+  });
+
+  it("probe с ключом: публичный /models не вызывается — сразу минимальный chat с Bearer", async () => {
+    // Публичный /models не проверяет Bearer: ok на нём — ложный сигнал для
+    // ключа, который чат ловит 401-ем. С ключом проба бьёт в chat/completions.
+    const fetchMock = routeFetch([
+      ["/models", () => new Response("[]", { status: 200 })],
+      ["/chat/completions", () => llmResponse("pong")],
+    ]);
+    const adapter = createOpenAiAdapter({ fetchImpl: fetchMock as unknown as typeof fetch });
+
+    await expect(adapter.probe(settings, { timeoutMs: 500 })).resolves.toEqual({
+      ok: true,
+      detail: "POST /chat/completions (минимальный запрос)",
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1); // маршрут /models — ловушка, он не должен вызваться
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(String(url)).toBe("http://adapter.test/v1/chat/completions");
     expect(((init?.headers ?? {}) as Record<string, string>).Authorization).toBe(
       "Bearer secret-key",
     );
   });
 
-  it("probe: /models не ок → fallback на минимальный chat/completions", async () => {
+  it("probe без ключа: /models не ок → fallback на минимальный chat/completions", async () => {
     const fetchMock = routeFetch([
       ["/models", () => new Response("nope", { status: 404 })],
       ["/chat/completions", () => llmResponse("pong")],
     ]);
     const adapter = createOpenAiAdapter({ fetchImpl: fetchMock as unknown as typeof fetch });
 
-    await expect(adapter.probe(settings, { timeoutMs: 500 })).resolves.toEqual({
+    await expect(
+      adapter.probe({ ...settings, apiKey: undefined }, { timeoutMs: 500 }),
+    ).resolves.toEqual({
       ok: true,
       detail: "POST /chat/completions (минимальный запрос)",
     });
