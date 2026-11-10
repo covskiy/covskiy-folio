@@ -149,6 +149,7 @@ export function createLlm(deps: LlmDeps = {}) {
       // Адаптер — на попытку с текущим fetchImpl: подмена deps.fetchImpl после
       // создания createLlm() остаётся видимой (ленивый резолв).
       const adapter = ADAPTERS[provider.kind]({ fetchImpl: deps.fetchImpl });
+      const startedAt = clock();
       try {
         const text = await adapter.chat(provider, messages, {
           maxTokens: cfg.maxTokens,
@@ -156,6 +157,13 @@ export function createLlm(deps: LlmDeps = {}) {
         });
         // Успех возвращает приоритет: следующий запрос снова начнёт с него.
         downUntil.delete(provider.id);
+        // Успехи не логировались вовсе — «кто ответил и за сколько» приходилось
+        // вычислять по косвенным признакам. Модель в строке обязательна: id слота
+        // не меняется при смене модели в env, а вопрос обычно именно про неё.
+        logger.debug(
+          "llm",
+          `провайдер ${provider.id} (${provider.model}) ответил за ${clock() - startedAt} мс`,
+        );
         return text;
       } catch (error) {
         const reason = error instanceof Error ? error.message : String(error);
