@@ -1,4 +1,4 @@
-import { createLlm } from "../llm.js";
+import { createLlm } from "../llm/index.js";
 import { log as rootLog, type Logger } from "../log.js";
 // Управляющие ручки (окно истории, порог dumb-ответа) — env-слайс brain из config.
 import { config } from "../config.js";
@@ -141,17 +141,19 @@ export function createBrain(deps: BrainDeps = {}) {
 
   /**
    * Отвечает на вопрос пользователя; единая точка входа для вебчата и Telegram.
-   * Спрашивает LLM (bot/llm.ts) с system-промтом (prompt.ts) и историей; при
-   * любой ошибке транспорта (LLM не настроен, таймаут, не-2xx, пустой ответ)
-   * падает в dumb-режим — поиск по справке без сети. Ошибка сборки промта
+   * Спрашивает LLM (bot/llm/index.ts — цепочка провайдеров) с system-промтом
+   * (prompt.ts) и историей; при любой ошибке транспорта (LLM не настроен,
+   * таймаут, не-2xx, пустой ответ) падает в dumb-режим — поиск по справке
+   * без сети. Ошибка сборки промта
    * (битый {{KNOWLEDGE}} в md) — отдельная деградация с честным логом: промт
    * собирается в собственном try до вызова LLM, чтобы причина не маскировалась
    * под «LLM недоступен» — при ней LLM никто не вызывал. Если справка недоступна
    * (битый/отсутствующий knowledge.json) — безопасный текст без сети и без
    * вызова LLM. Никогда не бросает.
    *
-   * Env (читает транспорт): LLM_BASE_URL + LLM_MODEL (для llm-режима; без них —
-   * сразу dumb), LLM_API_KEY (опциональный Bearer), LLM_TIMEOUT_MS/LLM_MAX_TOKENS.
+   * Env (читает транспорт): слоты LLM_1_*…LLM_9_* (для llm-режима; без них —
+   * сразу dumb), LLM_n_API_KEY (опциональный Bearer), LLM_TIMEOUT_MS/
+   * LLM_n_TIMEOUT_MS/LLM_TOTAL_TIMEOUT_MS/LLM_COOLDOWN_MS/LLM_MAX_TOKENS.
    * Свои ручки — env HISTORY_WINDOW (реплик истории в промте) и
    * DUMB_SCORE_THRESHOLD (порог уверенности dumb-ответа), слайс brain в config.
    *

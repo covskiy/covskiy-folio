@@ -31,7 +31,7 @@ llama.cpp. Архитектурные «почему» (зачем одна фу
 | Поменять справку бота                            | `bot/brain/knowledge.json` (массив `{id, title, text, keywords?, contact?, chip?, about?}`) — раздел [5](#5-правки-контента-рецепты)         |
 | Вопрос «не находится» в dumb-режиме              | добавь синоним в `keywords` записи (`knowledge.json`), не алгоритм — раздел [5.1](#51-добавитьизменить-элемент-справки)                      |
 | Поменять тон/правила ответов                     | `bot/brain/prompts/00-persona.md` (кто бот) и `bot/brain/prompts/10-rules.md` (как отвечать)                                                 |
-| Сменить модель / провайдера LLM                  | env `LLM_BASE_URL` + `LLM_MODEL` (и `LLM_API_KEY`), затем Redeploy — рецепт [5.4](#54-сменить-модель-или-провайдера)                         |
+| Сменить модель / провайдера LLM                  | env-слот `LLM_n_*` (`BASE_URL`/`MODEL`/`API_KEY`, номер = порядок попыток), затем Redeploy — рецепт [5.4](#54-сменить-модель-или-провайдера) |
 | Посмотреть промт на проде                        | `GET /api/telegram-setup?section=prompt` с секрет-заголовком — раздел [9.1](#91-админ-маршрут-apitelegram-setup)                             |
 | Посмотреть health (LLM/Redis/Telegram)           | `GET /api/telegram-setup?section=health` с секрет-заголовком                                                                                 |
 | Проверить/перерегистрировать вебхук              | `GET` / `POST /api/telegram-setup` с секрет-заголовком — [telegram-webhook-runbook.md](telegram-webhook-runbook.md)                          |
@@ -66,8 +66,9 @@ Vercel Function (`api/bot.ts`, роутер по pathname), которая за 
 | `api/bot.ts`                         | Единственная Vercel Function — роутер по pathname: `/api/chat`, `/api/telegram`, `/api/telegram-setup`, иначе 404 JSON                                                        |
 | `bot/config.ts`                      | Единый слайс env: типизированные `llm` / `redis` / `telegram` / `rateLimit` / `logLevel` над ленивыми геттерами; парсинг (trim, срез слэшей, числа с дефолтом) — только здесь |
 | `bot/log.ts`                         | Логгер-фабрика `createLogger()`: префикс `[модуль]`, уровень из `LOG_LEVEL` (дефолт warn), `warnThrottled`; таблица строк — раздел [9.2](#92-логи-vercel)                     |
-| `bot/llm.ts`                         | LLM-транспорт: `chat()` — запрос к OpenAI-совместимому endpoint (таймаут `LLM_TIMEOUT_MS`), `ping()` — health для админ-маршрута                                              |
-| `bot/brain/brain.ts`                 | «Мозг»: `answer()` — LLM через транспорт `bot/llm.ts`; при любой ошибке dumb-режим — порог 0.3, ответ `title + text`, подсказки fallback (fetch/ping в brain не живёт)        |
+| `bot/llm/index.ts`                   | LLM-транспорт: `chat()` — цепочка OpenAI-совместимых провайдеров (`LLM_1_*`…`LLM_9_*`, fallback, общий бюджет, cooldown), `ping()` — health по каждому слоту                  |
+| `bot/llm/openai.ts`                  | OpenAI-совместимый адаптер: `chat()`/`probe()` на fetch (`/chat/completions`, `/models`), Bearer только при ключе                                                             |
+| `bot/brain/brain.ts`                 | «Мозг»: `answer()` — LLM через транспорт `bot/llm/index.ts`; при любой ошибке dumb-режим — порог 0.3, ответ `title + text`, подсказки fallback (fetch/ping в brain не живёт)  |
 | `bot/brain/search.ts`                | Dumb-поиск: `rankKnowledge()` — нормализация, стемминг, IDF, синонимы `keywords`; порога и сети в модуле нет — порог и подсказки решает brain.ts                              |
 | `bot/brain/knowledge.ts`             | Хранилище справки: `load()` — безопасное чтение и валидация формы (title/text, keywords, contact — никогда не бросает), `uiTopics()` — единый состав чипсов и кнопок /start   |
 | `bot/brain/help.ts`                  | Тексты помощи на оба канала (`?`/`/help` вебчата, `/help` Telegram, запасной текст вебчата); модуль без импортов — не зависит от LLM/Redis/справки                            |
@@ -85,16 +86,16 @@ Vercel Function (`api/bot.ts`, роутер по pathname), которая за 
 | `src/chat/chat-widget.ts`            | UI виджета: кнопка-тумблер, панель, «печатает…», бейдж «офлайн-справка», чипсы и подсказки fallback, помощь «?», команды `/help`/`/start`, кнопка «новый диалог»              |
 | `src/chat/chat.css`                  | Стили виджета                                                                                                                                                                 |
 | `bot/dev/dev-function.mjs`           | Dev-адаптер функции (замена сломанного `vercel dev`): компиляция в `.tmp/dev-function`, контент, `.env.local`, порт 3000                                                      |
-| `bot/tests/`                         | Юнит-тесты в 15 файлах (Vitest, сеть замокана) — раздел [10](#10-тесты)                                                                                                       |
+| `bot/tests/`                         | Юнит-тесты в 16 файлах (Vitest, сеть замокана) — раздел [10](#10-тесты)                                                                                                       |
 | `vercel.json`                        | Только rewrites: `/api/chat`, `/api/telegram`, `/api/telegram-setup` → `/api/bot`                                                                                             |
-| `.env.example`                       | Шаблон env: профиль llama.cpp и Ollama Cloud + плейсхолдеры Upstash/Telegram                                                                                                  |
+| `.env.example`                       | Шаблон env: слоты LLM_1_*…LLM_9_* (Cloudflare + запасной / llama.cpp) + плейсхолдеры Upstash/Telegram                                                                         |
 | `src/main.ts`, `*.html`, `style.css` | Статика MPA: страницы, монтирование виджета (`mountChatWidget()` в `src/main.ts`)                                                                                             |
 
 ### Симптом → какие файлы смотреть первым делом
 
 | Симптом                                          | Файлы в порядке просмотра                                                                                                                                                 |
 | ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Бот отвечает в режиме «офлайн-справка»           | `bot/llm.ts` → `bot/config.ts` (env `LLM_BASE_URL`/`LLM_MODEL`, таймаут — env `LLM_TIMEOUT_MS`, дефолт 15 с) → логи (`[brain]`) → раздел [9.3](#93-mode-dumb-как-симптом) |
+| Бот отвечает в режиме «офлайн-справка»           | `bot/llm/index.ts` → `bot/config.ts` (слоты `LLM_n_*`, таймаут `LLM_TIMEOUT_MS`/`LLM_TOTAL_TIMEOUT_MS`) → логи (`[brain]`) → раздел [9.3](#93-mode-dumb-как-симптом)      |
 | Бот не помнит контекст диалога                   | `bot/store.ts` → `bot/redis-rest.ts` (env `UPSTASH_*` / `KV_REST_API_*`, TTL) → warn-логи `[store]` → раздел [6](#6-память-диалога-посмотреть-и-почистить-руками)         |
 | Вебчат не грузит чипсы/помощь                    | `bot/http/webchat.ts` (`uiTopics`, GET-ветка) → `src/chat/chat-api.ts` (`fetchChatBootstrap` — молча отдаёт пусто при не-2xx) → `src/chat/chat-widget.ts` (`renderChips`) |
 | Вопрос «не находится» в dumb-режиме              | `bot/brain/knowledge.json` (`keywords` записи — сначала синоним!) → `bot/brain/search.ts` (`rankKnowledge`) — раздел [5.1](#51-добавитьизменить-элемент-справки)          |
@@ -136,10 +137,15 @@ Vercel Function (`api/bot.ts`, роутер по pathname), которая за 
 5. **История.** `bot/store.ts` → `getHistory(webKey(sessionId))` — ключ вида
    `chat:web:{sessionId}`. Redis недоступен? `getHistory` вернёт `[]` (fail-open),
    ответ всё равно уйдёт — просто без контекста.
-6. **Мозг.** `bot/brain/brain.ts` → `answer(question, history)`: в LLM уходит payload
+6. **Мозг.** `bot/brain/brain.ts` → `answer(question, history)`: транспорт
+   `bot/llm/index.ts` идёт по слотам `LLM_1_*`…`LLM_9_*` по порядку номеров.
+   В каждый слот уходит payload
    `{model, messages: [system + последние N сообщений (env `HISTORY_WINDOW`, дефолт 10) + текущий вопрос], temperature: 0.3}`
-   на `${LLM_BASE_URL}/chat/completions`, таймаут `LLM_TIMEOUT_MS` — env,
-   дефолт 15 000 мс.
+   на `${LLM_n_BASE_URL}/chat/completions`; таймаут попытки — `LLM_n_TIMEOUT_MS`
+   (или общий `LLM_TIMEOUT_MS`, дефолт 15 000 мс), бюджет на всю цепочку —
+   `LLM_TOTAL_TIMEOUT_MS` (дефолт 20 000 мс). Ошибка слота (сеть, таймаут,
+   не-2xx, пустой ответ) → следующий слот; упавший слот на `LLM_COOLDOWN_MS`
+   (дефолт 60 000) перестаёт быть первым в тёплом инстансе.
    Ошибка транспорта → dumb-режим: `rankKnowledge()` из `bot/brain/search.ts`
    ищет по той же справке (морфология, IDF, синонимы `keywords`); попадание
    выше `DUMB_SCORE_THRESHOLD = 0.3` → ответ `title + text`, промах → fallback
@@ -349,16 +355,20 @@ const PARTS = [
 ### 5.4 Сменить модель или провайдера
 
 Env-переменные (прод — Vercel → Settings → Environment Variables):
+Слот `LLM_n_*` (n = 1…9, порядок = номер слота; при ошибке — fallback на следующий):
 
-- `LLM_BASE_URL` — база OpenAI-совместимого API. Код (`bot/config.ts`)
-  обрезает хвостовые `/`; `/chat/completions` дописывает транспорт `bot/llm.ts`:
-  для Ollama Cloud это
-  `https://ollama.com/v1`, для llama.cpp — `http://127.0.0.1:8080/v1` (про `/v1`
+- `LLM_n_BASE_URL` — база OpenAI-совместимого API. Код (`bot/config.ts`)
+  обрезает хвостовые `/`; `/chat/completions` дописывает адаптер
+  `bot/llm/openai.ts`: для прод-профиля Cloudflare Workers AI это
+  `https://api.cloudflare.com/client/v4/accounts/<ACCOUNT_ID>/ai/v1`, для
+  llama.cpp — `http://127.0.0.1:8080/v1` (про `/v1`
   подробнее в разделе [8](#8-локальный-llamacpp-полная-инструкция)).
-- `LLM_MODEL` — имя модели (для llama.cpp локально — любая строка).
-- `LLM_API_KEY` — опционален: пустой/отсутствующий просто не добавляет заголовок
+- `LLM_n_MODEL` — имя модели (для llama.cpp локально — любая строка).
+- `LLM_n_API_KEY` — опционален: пустой/отсутствующий просто не добавляет заголовок
   `Authorization: Bearer …` (в `bot/config.ts` пустая строка после trim
   превращается в undefined).
+- `LLM_n_KIND` — тип адаптера: пока только `openai` (default).
+- `LLM_n_TIMEOUT_MS` — таймаут одной попытки (мс; default из `LLM_TIMEOUT_MS`).
 
 После правки env — **Redeploy** (env запекается в деплой, раздел [11](#11-деплой-кратко)).
 Локально то же самое в `.env.local` — вступает в силу при перезапуске
@@ -530,25 +540,26 @@ curl -X POST http://127.0.0.1:3000/api/chat \
 
 Зачем: локальная модель — эксперименты с промтом и справкой без траты токенов и
 без сети. llama.cpp поднимает OpenAI-совместимый сервер, который brain вызывает
-как обычный провайдер.
+как обычный провайдер в цепочке слотов `LLM_1_*`…`LLM_9_*`.
 
-### 8.1 Формат LLM_BASE_URL — сверка с кодом
+### 8.1 Формат LLM_n_BASE_URL — сверка с кодом
 
-В `bot/config.ts` URL парсится, в `bot/llm.ts` — используется:
+В `bot/config.ts` URL парсится, в `bot/llm/openai.ts` — используется:
 
 ```ts
 // config.ts: хвостовые / срезаются (и trim заодно)
-baseUrl: withoutTrailingSlashes(str(env, "LLM_BASE_URL")),
+baseUrl: withoutTrailingSlashes(baseUrl),
 …
-// llm.ts
-fetch(`${cfg.baseUrl}/chat/completions`, …)
+// bot/llm/openai.ts (адаптер)
+fetch(`${settings.baseUrl}/chat/completions`, …)
 ```
 
-То есть к `LLM_BASE_URL` **всегда дописывается `/chat/completions`**, а базовый
+То есть к `LLM_1_BASE_URL` **всегда дописывается `/chat/completions`**, а базовый
 URL обязан уже включать `/v1`. Финальный формат для llama.cpp:
 
 ```env
-LLM_BASE_URL=http://127.0.0.1:8080/v1
+LLM_1_BASE_URL=http://127.0.0.1:8080/v1
+LLM_1_MODEL=llama3.1:8b
 ```
 
 - С `/v1`: запрос уйдёт на `http://127.0.0.1:8080/v1/chat/completions` — ровно
@@ -556,17 +567,20 @@ LLM_BASE_URL=http://127.0.0.1:8080/v1
 - Без `/v1` (`http://127.0.0.1:8080`): запрос попадёт на
   `/chat/completions` (без префикса) — endpoint не тот, ответ будет не 2xx, и
   brain уйдёт в dumb-режим. Если dumb при живом сервере — первым делом проверь `/v1`.
-- `LLM_API_KEY` по коду **не обязателен**: пустая строка/отсутствие →
+- `LLM_1_API_KEY` по коду **не обязателен**: пустая строка/отсутствие →
   `apiKey: undefined` → заголовок `Authorization` вообще не отправляется
-  (`...(cfg.apiKey ? { Authorization: Bearer … } : {})`). llama.cpp ключ не
-  проверяет, так что можно не задавать вовсе (в `.env.example` стоит
-  `LLM_API_KEY=none` — безвредная строка).
-- `LLM_MODEL` — обязательна по коду (слайс `config.llm` без неё возвращает null →
-  сразу dumb), но llama.cpp игнорирует имя: модель уже загружена файлом при
-  старте сервера. Подойдёт `LLM_MODEL=my-model`.
-- Таймаут запроса — env `LLM_TIMEOUT_MS` (мс, дефолт 15 секунд,
-  `AbortSignal.timeout`). Для медленной локальной модели подними в
-  `.env.local`, например `LLM_TIMEOUT_MS=60000`.
+  (`...(settings.apiKey ? { Authorization: Bearer … } : {})`). llama.cpp ключ не
+  проверяет, так что можно не задавать вовсе (в `.env.example` поле оставлено
+  пустым).
+- `LLM_1_MODEL` — обязательна по коду: без неё слот неполный, попадает в
+  `issues` и в цепочку не входит; при пустой цепочке brain уходит в dumb
+  (health показывает причину), но llama.cpp имя модели игнорирует: модель уже
+  загружена файлом при старте сервера. Подойдёт `LLM_1_MODEL=my-model`.
+- Таймаут попытки — env `LLM_1_TIMEOUT_MS` (мс; без него дефолт `LLM_TIMEOUT_MS`,
+  15 секунд, `AbortSignal.timeout`), бюджет всей цепочки — `LLM_TOTAL_TIMEOUT_MS`
+  (дефолт 20 секунд). Для медленной локальной модели подними **оба** в
+  `.env.local`, например `LLM_1_TIMEOUT_MS=60000` и `LLM_TOTAL_TIMEOUT_MS=60000`,
+  — иначе общий бюджет срежет ответ раньше, чем истечёт таймаут попытки.
 
 ### 8.2 Установка llama.cpp на Windows
 
@@ -621,9 +635,9 @@ llama-server -m C:/models/my-model.Q4_K_M.gguf --port 8080
 Создай `.env.local` в корне (из шаблона `.env.example`, профиль 1):
 
 ```env
-LLM_BASE_URL=http://127.0.0.1:8080/v1
-LLM_API_KEY=none
-LLM_MODEL=my-model
+LLM_1_BASE_URL=http://127.0.0.1:8080/v1
+LLM_1_API_KEY=none
+LLM_1_MODEL=my-model
 
 # Память диалогов (Upstash). База из Vercel Marketplace привозит переменные
 # KV_REST_API_URL/TOKEN сама после vercel env pull; для базы с upstash.com
@@ -676,7 +690,7 @@ curl -X POST http://127.0.0.1:3000/api/chat \
 
 | Причина в логе `[brain]`                      | Что проверить                                                               |
 | --------------------------------------------- | --------------------------------------------------------------------------- |
-| `LLM endpoint вернул 404` (или другой не-2xx) | `/v1` в `LLM_BASE_URL`? Сервер запущен? (`curl /health`)                    |
+| `LLM endpoint вернул 404` (или другой не-2xx) | `/v1` в `LLM_1_BASE_URL`? Сервер запущен? (`curl /health`)                  |
 | Таймаут / «The operation was aborted»         | Первый ответ локальной модели может идти дольше 15 с — см. ниже про прогрев |
 | `LLM не настроен`                             | `.env.local` существует и перечитан? Перезапусти `npm run dev:function`     |
 | Connection refused / fetch failed             | Сервер не поднят или порт не 8080                                           |
@@ -693,7 +707,7 @@ curl -X POST http://127.0.0.1:3000/api/chat \
   сообщений диалога (`HISTORY_WINDOW`). Промт со всей справкой — уже заметный
   кусок токенов; следи, чтобы `-c` (ctx-size) сервера вмещал промт + 10 сообщений
   - ответ, иначе модель начнёт обрезать контекст и отвечать странно.
-- **`LLM_API_KEY` пустой** — это нормально (Bearer не отправится, llama.cpp не
+- **`LLM_1_API_KEY` пустой** — это нормально (Bearer не отправится, llama.cpp не
   требует ключа). Не пытайся «починить» несуществующую проблему 401.
 
 ---
@@ -735,11 +749,18 @@ curl -sS -X POST "https://covskiy-folio.vercel.app/api/telegram-setup" \
 Расшифровка `?section=health` (`{llm, redis, telegram}`, считаются параллельно,
 ошибка одного не валит остальные):
 
-| Поле       | `ok: true`                                                                                | `ok: false` и что значит                                                                                                                                                         |
-| ---------- | ----------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `llm`      | `latencyMs` + `detail: "GET /models"` или `"POST /chat/completions (минимальный запрос)"` | `error: "не настроен…"` (нет `LLM_BASE_URL`/`LLM_MODEL`), `error: "endpoint вернул …"` (не-2xx), либо текст сетевой ошибки. Таймаут каждой пробы — 10 с (`ping` из `bot/llm.ts`) |
-| `redis`    | `latencyMs` (PING → PONG)                                                                 | `reason: "не настроен…"` (нет `UPSTASH_REDIS_REST_*` / `KV_REST_API_*`) или `"нет ответа PONG…"` (детали — в warn-логах `[store]`). `ping()` из `bot/store.ts`                   |
-| `telegram` | `webhook: {url, pending_update_count, …}`                                                 | `error` — текст исключения от Bot API (обычно «TELEGRAM_BOT_TOKEN не задан» или ошибка сети до api.telegram.org)                                                                 |
+| Поле       | `ok: true`                                                                                | `ok: false` и что значит                                                                                                                                                                                                       |
+| ---------- | ----------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `llm`      | `latencyMs` + `detail: "GET /models"` или `"POST /chat/completions (минимальный запрос)"` | `error: "не настроен…"` (нет ни одного слота `LLM_1_*`…`LLM_9_*`), `error: "все провайдеры недоступны…"` (ошибка/таймаут всех слотов), либо текст последней ошибки. Таймаут каждой пробы — 10 с (`ping` из `bot/llm/index.js`) |
+| `redis`    | `latencyMs` (PING → PONG)                                                                 | `reason: "не настроен…"` (нет `UPSTASH_REDIS_REST_*` / `KV_REST_API_*`) или `"нет ответа PONG…"` (детали — в warn-логах `[store]`). `ping()` из `bot/store.ts`                                                                 |
+| `telegram` | `webhook: {url, pending_update_count, …}`                                                 | `error` — текст исключения от Bot API (обычно «TELEGRAM_BOT_TOKEN не задан» или ошибка сети до api.telegram.org)                                                                                                               |
+
+Внутри `llm` всегда лежат ещё `providers` — картина по каждому слоту: `{id, ok,
+latencyMs, detail}` у ответившего, `{id, ok: false, error}` у упавшего — и
+`issues` из конфига (неполные слоты, дубли `ID`, опечатки в именах переменных,
+номера вне 1…9). Пробы идут параллельно и не зависят от cooldown-состояния
+цепочки: health показывает живость всех слотов, а не то, кого `chat()` сейчас
+пропускает.
 
 `vercel.app` из локальной сети может резаться (RST на TLS) — ретраить команду;
 если совсем никак — socks5-вариант из
@@ -756,7 +777,9 @@ curl -sS -X POST "https://covskiy-folio.vercel.app/api/telegram-setup" \
 
 | Строка в логе                                                                                     | Кто пишет / что значит                                                                                                                                                                                                                                                                                           |
 | ------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `[brain] LLM недоступен (…), отвечаю в dumb-режиме`                                               | `bot/brain/brain.ts`: LLM не настроен / не-2xx / таймаут `LLM_TIMEOUT_MS` (дефолт 15 с) / пустой ответ. В скобках — точная причина                                                                                                                                                                               |
+| `[brain] LLM недоступен (…), отвечаю в dumb-режиме`                                               | `bot/brain/brain.ts`: LLM не настроен (нет валидных слотов `LLM_n_*`) / все провайдеры цепочки недоступны / ошибка транспорта. В скобках — точная причина: для цепочки — агрегат `id: причина` по каждому слоту                                                                                                  |
+| `[llm] провайдер <id> недоступен: <причина>`                                                      | `bot/llm/index.ts`: слот цепочки упал (сеть / таймаут / не-2xx / пустой ответ) — запрос ушёл к следующему, слот попал в cooldown. **warn (throttled)** — виден по умолчанию                                                                                                                                      |
+| `[llm] провайдер <id> в cooldown — пробуем после остальных`                                       | `bot/llm/index.ts`: слот недавно падал, запрос идёт сначала к здоровым, слот добирается после (half-open). **debug** — виден при `LOG_LEVEL=debug`                                                                                                                                                               |
 | `[brain] system-промт не собран (…), отвечаю в dumb-режиме`                                       | `bot/brain/brain.ts`: ошибка сборки system-промта — битый плейсхолдер `{{KNOWLEDGE}}` или недоступный md-раздел ([5.3](#53-изменить-структуру-промта--добавить-файл-часть)). LLM при этой ошибке не вызывался: ошибка контента логируется честно, а не как «LLM недоступен». Dumb отвечает по справке как обычно |
 | `[store] Upstash Redis не настроен (…)`                                                           | `bot/redis-rest.ts` (префикс `store`): нет env → штатный stateless-режим                                                                                                                                                                                                                                         |
 | `[store] Upstash REST вернул …` / `Upstash недоступен (…)` / `Upstash вернул ошибку (…)`          | `bot/redis-rest.ts`: Redis не отвечает — бот работает, но без истории (fail-open)                                                                                                                                                                                                                                |
@@ -778,12 +801,14 @@ curl -sS -X POST "https://covskiy-folio.vercel.app/api/telegram-setup" \
 
 Бейдж «офлайн-справка» в вебчате / отсутствие LLM-ответа. Все причины разом:
 
-1. **LLM не настроен** — env `LLM_BASE_URL` или `LLM_MODEL` пусты (слайс
-   `config.llm` в `bot/config.ts` вернёт null). Добавил переменные? Нужен
+1. **LLM не настроен** — нет ни одного слота `LLM_1_*`…`LLM_9_*` (слайс
+   `config.llm` в `bot/config.ts` вернёт пустой массив). Добавил переменные? Нужен
    Redeploy: env запекается в деплой, просто «сохранить» мало (раздел [11](#11-деплой-кратко)).
-2. **LLM недоступен** — endpoint отвечает не-2xx или сеть недоступна. Проверь
-   health `?section=health` и URL (прод: `https://ollama.com/v1`).
-3. **Таймаут** — дефолт 15 с, поднимается env `LLM_TIMEOUT_MS`; медленный
+2. **Все LLM-провайдеры недоступны** — все слоты отвечают не-2xx, таймаутом или сетевой ошибкой. Проверь
+   health `?section=health` (`providers` покажет, кто именно упал и почему) и
+   базу слота в env (прод: слоты `LLM_1_*` на Cloudflare Workers AI, см.
+   `.env.example`).
+3. **Таймаут** — дефолт 15 с, поднимается env `LLM_n_TIMEOUT_MS` или общий `LLM_TIMEOUT_MS`; медленный
    провайдер/модель; локальный llama.cpp — прогрев
    (раздел [8.8](#88-грабли-локального-llamacpp)).
 4. **Файлы промта/справки затерялись в артефакте** — `ENOENT` в логах: md/json не

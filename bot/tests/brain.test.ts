@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createConfig } from "../config";
 import { answer, createBrain, type Llm } from "../brain/brain";
 import { createKnowledge, type KnowledgeItem } from "../brain/knowledge";
-import { createLlm, type LlmMessage, type LlmPing } from "../llm";
+import { createLlm, type LlmMessage, type LlmPing } from "../llm/index";
 import type { ChatMessage } from "../store";
 
 afterEach(() => {
@@ -25,7 +25,7 @@ function fakeKnowledge(entries: KnowledgeItem[] = FIXTURE_ENTRIES) {
 function fakeLlm(chatImpl: (messages: LlmMessage[]) => Promise<string>): Llm {
   return {
     chat: vi.fn(chatImpl),
-    ping: vi.fn(async (): Promise<LlmPing> => ({ ok: true })),
+    ping: vi.fn(async (): Promise<LlmPing> => ({ ok: true, providers: [], issues: [] })),
   };
 }
 
@@ -508,8 +508,10 @@ describe("answer: справка недоступна (fail-safe)", () => {
 describe("дефолтный экспорт answer", () => {
   it("переиспользует createBrain: dumb-путь работает без сети", async () => {
     // Дефолтный llm читает process.env на вызов — пустим его в dumb.
-    vi.stubEnv("LLM_BASE_URL", "");
-    vi.stubEnv("LLM_MODEL", "");
+    vi.stubEnv("LLM_1_BASE_URL", "");
+    vi.stubEnv("LLM_1_MODEL", "");
+    vi.stubEnv("LLM_2_BASE_URL", "");
+    vi.stubEnv("LLM_2_MODEL", "");
 
     const result = await answer("когда запуск ракеты на марс?");
 
@@ -518,8 +520,10 @@ describe("дефолтный экспорт answer", () => {
   });
 
   it("«Сколько стоит?» на реальной справке → уверенный dumb-ответ с заголовком", async () => {
-    vi.stubEnv("LLM_BASE_URL", "");
-    vi.stubEnv("LLM_MODEL", "");
+    vi.stubEnv("LLM_1_BASE_URL", "");
+    vi.stubEnv("LLM_1_MODEL", "");
+    vi.stubEnv("LLM_2_BASE_URL", "");
+    vi.stubEnv("LLM_2_MODEL", "");
 
     const result = await answer("Сколько стоит?");
 

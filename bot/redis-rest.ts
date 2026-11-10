@@ -22,7 +22,7 @@ import type { AppConfig } from "./config.js";
  * (ленивые геттеры перечитывают env на каждый доступ) после import должна быть
  * видна — иначе тесты и логика «env запекается в деплой» ломаются незаметно.
  *
- * Дублирование «fetch + timeout + JSON» с llm.ts и telegram-api.ts оставлено
+ * Дублирование «fetch + timeout + JSON» с bot/llm/openai.ts и telegram-api.ts оставлено
  * сознательно: у трёх мест разная семантика ошибок (throw / ok:false /
  * fail-open), общий хелпер сделает хуже.
  */

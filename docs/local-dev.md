@@ -42,10 +42,10 @@ npm run dev                      # открыть http://localhost:5173
 Env для локалки: `npx vercel env pull .env.local` (подтягивает переменные проекта
 из Vercel; команда **перезаписывает** файл — свои локальные правки вноси после pull).
 
-## llama.cpp вместо Ollama Cloud (без траты токенов)
+## llama.cpp вместо облачного провайдера (без траты токенов)
 
-LLM-endpoint настраивается переменными, поэтому локально удобнее дешёвый/бесплатный
-вариант — llama.cpp с OpenAI-совместимым сервером:
+LLM — нумерованные слоты, поэтому локально удобнее дешёвый/бесплатный вариант —
+llama.cpp с OpenAI-совместимым сервером (облачные слоты закомментируй):
 
 ```bash
 llama-server -m model.gguf --port 8080
@@ -54,16 +54,22 @@ llama-server -m model.gguf --port 8080
 `.env.local` (создай из `.env.example`):
 
 ```env
-LLM_BASE_URL=http://127.0.0.1:8080/v1
-LLM_API_KEY=none
-LLM_MODEL=my-model
+LLM_1_ID=llama
+LLM_1_BASE_URL=http://127.0.0.1:8080/v1
+LLM_1_MODEL=my-model
+LLM_1_TIMEOUT_MS=60000
+LLM_TOTAL_TIMEOUT_MS=60000
 ```
+
+`LLM_1_API_KEY` не нужен — Bearer не отправится, llama.cpp это устраивает.
+Таймауты подняты, потому что локальная модель с reasoning думает дольше прода:
+общий бюджет должен быть не меньше таймаута попытки.
 
 Полезный побочный эффект: останови `llama-server` — и brain по таймауту уйдёт
 в dumb-режим. Так fallback тестируется честно, без правок кода.
 
 > `localhost` в `.env.local` работает только локально: в облаке Vercel твоего
-> llama-server нет. Прод-значения (`https://ollama.com/v1`) живут отдельно
+> llama-server нет. Прод-значения (слоты `LLM_1_*` на Cloudflare) живут отдельно
 > в env Vercel — среды изолированы.
 
 ## Проверки
