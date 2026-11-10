@@ -3,8 +3,10 @@
 Сайт-визитка: статический MPA на **Vite** + **одна** Vercel Function, которая обслуживает
 и вебчат на сайте, и Telegram-бота. Оба канала отвечают одним «мозгом»-справочником:
 
-- если доступен OpenAI-совместимый LLM-endpoint (по умолчанию **Ollama Cloud**,
-  локально — **llama.cpp**) — вопрос обрабатывает нейросеть;
+- если доступен хотя бы один OpenAI-совместимый провайдер из цепочки
+  `LLM_1_*`…`LLM_9_*` (прод — **Cloudflare Workers AI**, запасной — любой
+  совместимый endpoint, локально — **llama.cpp**) — вопрос обрабатывает
+  нейросеть, а падение слота переводит запрос на следующий;
 - если LLM недоступен — включается **dumb-режим**: поиск по справке (морфология,
   IDF, синонимы `keywords`) без нейросети и без токенов; промах поиска приходит
   с подсказками тем, среди которых гарантированно есть контакты, а помощь
@@ -35,7 +37,7 @@ covskiy-folio/
 │  │  └─ telegram-admin.ts                  # /api/telegram-setup (health, промт, вебхук)
 │  ├─ telegram-api.ts                       # обёртка Bot API (sendMessage и др.) на fetch
 │  ├─ brain/                                # «мозг» + контент
-│  │  ├─ brain.ts                           # answer(): LLM (env LLM_TIMEOUT_MS, дефолт 15 c) → dumb (порог env DUMB_SCORE_THRESHOLD, дефолт 0.3; подсказки fallback)
+│  │  ├─ brain.ts                           # answer(): LLM (цепочка LLM_n_*, бюджет LLM_TOTAL_TIMEOUT_MS, дефолт 20 c) → dumb (порог env DUMB_SCORE_THRESHOLD, дефолт 0.3; подсказки fallback)
 │  │  ├─ search.ts                          # dumb-поиск: rankKnowledge() — нормализация, стемминг, IDF, keywords
 │  │  ├─ knowledge.ts                       # хранилище справки: безопасное чтение, uiTopics()
 │  │  ├─ help.ts                            # тексты помощи: вебчат (?/help), Telegram /help, запасной
@@ -66,7 +68,7 @@ covskiy-folio/
 ├─ vercel.json                              # rewrites: /api/chat, /api/telegram, /api/telegram-setup → /api/bot
 ├─ vite.config.ts                           # MPA-входы + proxy /api для локалки
 ├─ tsconfig.json                            # строгий TS (фронт + функции + тесты)
-├─ .env.example                             # профили llama.cpp / Ollama Cloud + плейсхолдеры Upstash
+├─ .env.example                             # слоты LLM_1_*…LLM_9_* (Cloudflare + запасной / llama.cpp) + плейсхолдеры Upstash
 └─ package.json
 ```
 
@@ -94,17 +96,20 @@ Conventional Commits (`feat:`, `fix:`, `docs:`, `chore:`, …) — провер�
 Задаются на Vercel (Settings → Environment Variables / `vercel env add`) и опционально
 в `.env.local` для локалки. Шаблон — в `.env.example`.
 
-| Переменная                 | Зачем                                                             | Пример (прод)            |
-| -------------------------- | ----------------------------------------------------------------- | ------------------------ |
-| `LLM_BASE_URL`             | база OpenAI-совместимого API, к ней добавится `/chat/completions` | `https://ollama.com/v1`  |
-| `LLM_API_KEY`              | Bearer-токен (для llama.cpp не нужен)                             | ключ из ollama.com       |
-| `LLM_MODEL`                | имя модели                                                        | `gpt-oss:20b`            |
-| `UPSTASH_REDIS_REST_URL`   | REST-эндпоинт Upstash Redis (память диалогов)                     | `https://….upstash.io`   |
-| `UPSTASH_REDIS_REST_TOKEN` | Bearer-токен того же REST API                                     | длинный токен из Upstash |
-| `TELEGRAM_BOT_TOKEN`       | токен бота от @BotFather                                          | `123456:ABC-…`           |
-| `TELEGRAM_WEBHOOK_SECRET`  | секрет для проверки запросов webhook                              | длинная случайная строка |
+| Переменная                 | Зачем                                                                                      | Пример (прод)            |
+| -------------------------- | ------------------------------------------------------------------------------------------ | ------------------------ |
+| `LLM_1_*`…`LLM_9_*`        | слоты цепочки: `ID`, `KIND`, `BASE_URL`, `API_KEY`, `MODEL`, `TIMEOUT_MS`; номер = порядок | Cloudflare Workers AI    |
+| `LLM_TIMEOUT_MS`           | таймаут одной попытки по умолчанию                                                         | `15000`                  |
+| `LLM_TOTAL_TIMEOUT_MS`     | общий бюджет ответа на все попытки                                                         | `20000`                  |
+| `LLM_COOLDOWN_MS`          | сколько не трогать упавший слот                                                            | `60000`                  |
+| `LLM_MAX_TOKENS`           | потолок генерации ответа                                                                   | `1024`                   |
+| `UPSTASH_REDIS_REST_URL`   | REST-эндпоинт Upstash Redis (память диалогов)                                              | `https://….upstash.io`   |
+| `UPSTASH_REDIS_REST_TOKEN` | Bearer-токен того же REST API                                                              | длинный токен из Upstash |
+| `TELEGRAM_BOT_TOKEN`       | токен бота от @BotFather                                                                   | `123456:ABC-…`           |
+| `TELEGRAM_WEBHOOK_SECRET`  | секрет для проверки запросов webhook                                                       | длинная случайная строка |
 
-Без `LLM_*` проект полностью работоспособен — просто всегда отвечает dumb-режимом.
+Без слотов `LLM_1_*`…`LLM_9_*` проект полностью работоспособен — просто всегда
+отвечает dumb-режимом.
 Без `UPSTASH_*` — тоже, но без памяти диалога (stateless, fail-open). База Upstash,
 созданная через Vercel Marketplace, приезжает парой `KV_REST_API_URL`/`KV_REST_API_TOKEN`
 — store.ts понимает оба семейства имён (см. `.env.example`).

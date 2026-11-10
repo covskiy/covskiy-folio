@@ -4,8 +4,9 @@
 
 Сайт-визитка: статический MPA на **Vite** + **одна** Vercel Function (`api/bot.ts`),
 обслуживающая вебчат на сайте и Telegram-бота единым «мозгом»-справочником.
-LLM — любой OpenAI-совместимый endpoint (`LLM_BASE_URL`, по умолчанию Ollama Cloud,
-локально llama.cpp); при недоступности — dumb-поиск по справке. Без БД.
+LLM — упорядоченная цепочка OpenAI-совместимых провайдеров (`LLM_1_*`…`LLM_9_*`:
+fallback на любую ошибку, общий бюджет времени, cooldown упавшего слота); при
+недоступности всех — dumb-поиск по справке. Без БД.
 Полная архитектура — [docs/architecture.md](docs/architecture.md).
 
 ## Команды
@@ -43,7 +44,7 @@ LLM — любой OpenAI-совместимый endpoint (`LLM_BASE_URL`, по 
 ## Секреты
 
 - `.env*` в git не попадают; секреты — только в env Vercel или локальном `.env.local`.
-- Не выводить в чат/логи значения `TELEGRAM_BOT_TOKEN`, `LLM_API_KEY`, `TELEGRAM_WEBHOOK_SECRET`.
+- Не выводить в чат/логи значения `TELEGRAM_BOT_TOKEN`, `LLM_n_API_KEY`, `TELEGRAM_WEBHOOK_SECRET`.
 
 ## Код
 
@@ -70,11 +71,13 @@ LLM — любой OpenAI-совместимый endpoint (`LLM_BASE_URL`, по 
 ## Платформа (Vercel)
 
 - Hobby-план, Fluid compute; функции в корневом `api/`, `vercel.json` — только rewrites.
-- Env: `LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL`, Redis — пара `UPSTASH_REDIS_REST_*`
+- Env: слоты `LLM_1_*`…`LLM_9_*` (`ID`, `KIND`, `BASE_URL`, `API_KEY`, `MODEL`,
+  `TIMEOUT_MS`; номер = порядок попыток), Redis — пара `UPSTASH_REDIS_REST_*`
   или `KV_REST_API_URL/TOKEN` от интеграции Marketplace (store.ts понимает оба
   семейства), `TELEGRAM_BOT_TOKEN`, `TELEGRAM_WEBHOOK_SECRET`; опционально
   `LOG_LEVEL` (дефолт warn — `bot/log.ts`), `LLM_TIMEOUT_MS`/`LLM_MAX_TOKENS`
-  (дефолт 15000/1024 — `bot/config.ts`), `RATE_LIMIT_MAX`/`RATE_LIMIT_WINDOW_SECONDS`
+  (дефолт 15000/1024 — `bot/config.ts`), `LLM_TOTAL_TIMEOUT_MS`/`LLM_COOLDOWN_MS`
+  (дефолт 20000/60000 — `bot/config.ts`), `RATE_LIMIT_MAX`/`RATE_LIMIT_WINDOW_SECONDS`
   (дефолт 15/3600 — `bot/rate-limit.ts`), `HISTORY_WINDOW`/`DUMB_SCORE_THRESHOLD`
   (дефолт 10/0.3 — `bot/brain/brain.ts`), `HISTORY_TTL_SECONDS` (дефолт 86400 —
   `bot/store.ts`), `TELEGRAM_SEEN_TTL_SECONDS` (дефолт 3600 — `bot/http/telegram-webhook.ts`).

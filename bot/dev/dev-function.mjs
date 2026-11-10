@@ -54,6 +54,8 @@ function loadEnvFile() {
       value = value.slice(1, -1);
     }
     // Уже выставленные переменные не перекрываем — явный env приоритетнее.
+    // Значения не печатаем: в .env.local живут секреты (токены/ключи), а их
+    // вывод в логи запрещён правилами репозитория.
     process.env[key] ??= value;
   }
   console.warn("[dev-function] env загружен из .env.local");

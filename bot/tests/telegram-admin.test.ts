@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createTelegramAdminHandler } from "../http/telegram-admin";
 import { createConfig } from "../config";
-import { createLlm, type LlmPing } from "../llm";
+import { createLlm, type LlmPing } from "../llm/index";
 import { createStore, type RedisPing, type Store } from "../store";
 import { createTelegramApi, type TelegramApi, type TgWebhookInfo } from "../telegram-api";
 import type { KnowledgeItem } from "../brain/knowledge";
@@ -66,7 +66,12 @@ function makeHarness(options: HarnessOptions = {}): Harness {
   const llm = {
     ping: vi.fn(
       async (): Promise<LlmPing> =>
-        options.llmPing ?? { ok: false, error: "не настроен: нужны LLM_BASE_URL и LLM_MODEL" },
+        options.llmPing ?? {
+          ok: false,
+          error: "не настроен: нет LLM-провайдеров",
+          providers: [],
+          issues: [],
+        },
     ),
   };
   const store = {
@@ -228,7 +233,7 @@ describe("handleTelegramAdmin: разделы health и prompt", () => {
     // llm — реальный транспорт: оба его пробы упадут в сеть (fetchImpl-фейк),
     // ping должен вернуть {ok:false, error} с текстом сетевой ошибки.
     const llm = createLlm({
-      config: createConfig({ LLM_BASE_URL: "https://llm.test/v1", LLM_MODEL: "test-model" }),
+      config: createConfig({ LLM_1_BASE_URL: "https://llm.test/v1", LLM_1_MODEL: "test-model" }),
       fetchImpl: async () => {
         throw new Error("ECONNREFUSED");
       },

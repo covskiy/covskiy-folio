@@ -1,7 +1,7 @@
 // config — готовый типизированный слайс telegram (секрет trim'нутый);
 // дефолтный инстанс для рантайма.
 import { config, type AppConfig } from "../config.js";
-import { createLlm, type Llm } from "../llm.js";
+import { createLlm, type Llm } from "../llm/index.js";
 import { log as rootLog, type Logger } from "../log.js";
 import { systemPrompt } from "../brain/prompt.js";
 import { knowledge as rootKnowledge, type KnowledgeStore } from "../brain/knowledge.js";
@@ -80,8 +80,8 @@ export function createTelegramAdminHandler(deps: TelegramAdminHandlerDeps) {
    * TELEGRAM_WEBHOOK_SECRET или при несовпадении — 404 (не 401: маршрут
    * не подтверждает своё существование). Ошибка Telegram API — 502 с текстом.
    *
-   * Env: TELEGRAM_WEBHOOK_SECRET (обязателен); для health — LLM_BASE_URL/
-   * LLM_MODEL/LLM_API_KEY и UPSTASH_REDIS_REST_URL/TOKEN.
+   * Env: TELEGRAM_WEBHOOK_SECRET (обязателен); для health — слоты
+   * LLM_1_*…LLM_9_* и UPSTASH_REDIS_REST_URL/TOKEN.
    *
    * @param {Request} request - Входящий запрос функции.
    * @returns {Promise<Response>} JSON; коды: 200, 404 (секрет отсутствует/неверен), 405, 502.

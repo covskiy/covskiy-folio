@@ -9,51 +9,177 @@ afterEach(() => {
 });
 
 describe("config: llm", () => {
-  it("полный набор разбирается: trim, срез слэшей baseUrl, apiKey, числа", () => {
+  it("слоты разбираются по возрастанию номера: trim, слэши, id/kind/apiKey", () => {
     const cfg = createConfig({
-      LLM_BASE_URL: "  https://ollama.com/v1///  ",
-      LLM_MODEL: " gpt-oss:20b ",
-      LLM_API_KEY: " sk-test ",
-      LLM_TIMEOUT_MS: "25000",
+      LLM_2_BASE_URL: "  https://backup.example.com/v1///  ",
+      LLM_2_MODEL: " backup-model ",
+      LLM_2_ID: " backup ",
+      LLM_2_API_KEY: " sk-backup ",
+      LLM_1_BASE_URL: "https://main.example.com/v1",
+      LLM_1_MODEL: " main-model ",
+      LLM_1_KIND: "openai",
+      LLM_1_TIMEOUT_MS: "25000",
       LLM_MAX_TOKENS: "512",
+      LLM_TOTAL_TIMEOUT_MS: "30000",
+      LLM_COOLDOWN_MS: "120000",
     });
 
     expect(cfg.llm).toEqual({
-      baseUrl: "https://ollama.com/v1",
-      apiKey: "sk-test",
-      model: "gpt-oss:20b",
-      timeoutMs: 25_000,
+      providers: [
+        {
+          id: "provider-1",
+          kind: "openai",
+          baseUrl: "https://main.example.com/v1",
+          apiKey: undefined,
+          model: "main-model",
+          timeoutMs: 25_000,
+        },
+        {
+          id: "backup",
+          kind: "openai",
+          baseUrl: "https://backup.example.com/v1",
+          apiKey: "sk-backup",
+          model: "backup-model",
+          timeoutMs: 15_000,
+        },
+      ],
       maxTokens: 512,
+      totalTimeoutMs: 30_000,
+      cooldownMs: 120_000,
+      issues: [],
     });
   });
 
-  it("нет LLM_BASE_URL → null", () => {
-    expect(createConfig({ LLM_MODEL: "m" }).llm).toBeNull();
+  it("ID/KIND по умолчанию; LLM_TIMEOUT_MS — дефолт таймаута попытки", () => {
+    const cfg = createConfig({
+      LLM_1_BASE_URL: "https://x",
+      LLM_1_MODEL: "m",
+      LLM_TIMEOUT_MS: "7000",
+    });
+
+    expect(cfg.llm.providers).toEqual([
+      {
+        id: "provider-1",
+        kind: "openai",
+        baseUrl: "https://x",
+        apiKey: undefined,
+        model: "m",
+        timeoutMs: 7_000,
+      },
+    ]);
   });
 
-  it("нет LLM_MODEL → null", () => {
-    expect(createConfig({ LLM_BASE_URL: "https://x" }).llm).toBeNull();
+  it("нет слотов → providers: [], issues: [] и дефолты общих ручек", () => {
+    expect(createConfig({}).llm).toEqual({
+      providers: [],
+      maxTokens: 1_024,
+      totalTimeoutMs: 20_000,
+      cooldownMs: 60_000,
+      issues: [],
+    });
   });
 
-  it("пустой LLM_API_KEY → undefined, не пустая строка", () => {
-    const cfg = createConfig({ LLM_BASE_URL: "https://x", LLM_MODEL: "m", LLM_API_KEY: "   " });
-    expect(cfg.llm?.apiKey).toBeUndefined();
+  it("пустой LLM_n_API_KEY → undefined, не пустая строка", () => {
+    const cfg = createConfig({
+      LLM_1_BASE_URL: "https://x",
+      LLM_1_MODEL: "m",
+      LLM_1_API_KEY: "   ",
+    });
+    expect(cfg.llm.providers[0].apiKey).toBeUndefined();
   });
 
-  it("без числовых env — дефолты 15000/1024", () => {
-    const cfg = createConfig({ LLM_BASE_URL: "https://x", LLM_MODEL: "m" });
-    expect(cfg.llm).toMatchObject({ timeoutMs: 15_000, maxTokens: 1_024 });
+  it("неполный слот → issues, валидный соседний остаётся в цепочке", () => {
+    const cfg = createConfig({
+      LLM_1_BASE_URL: "https://x",
+      LLM_1_MODEL: "m",
+      LLM_2_BASE_URL: "https://y",
+    });
+
+    expect(cfg.llm.providers.map((provider) => provider.id)).toEqual(["provider-1"]);
+    expect(cfg.llm.issues).toEqual([expect.stringContaining("LLM_2_")]);
+  });
+
+  it("неизвестный KIND → issues, слот не попадает в цепочку", () => {
+    const cfg = createConfig({
+      LLM_1_BASE_URL: "https://x",
+      LLM_1_MODEL: "m",
+      LLM_1_KIND: "anthropic",
+    });
+
+    expect(cfg.llm.providers).toEqual([]);
+    expect(cfg.llm.issues).toEqual([expect.stringContaining("KIND")]);
+  });
+
+  it("дубль ID → issues, второй слот пропущен", () => {
+    const cfg = createConfig({
+      LLM_1_ID: "same",
+      LLM_1_BASE_URL: "https://x",
+      LLM_1_MODEL: "m",
+      LLM_2_ID: "same",
+      LLM_2_BASE_URL: "https://y",
+      LLM_2_MODEL: "m",
+    });
+
+    expect(cfg.llm.providers).toHaveLength(1);
+    expect(cfg.llm.issues).toEqual([expect.stringContaining("дубль")]);
+  });
+
+  it("пропуск нумерации → issues, валидные слоты всё равно используются", () => {
+    const cfg = createConfig({
+      LLM_1_BASE_URL: "https://x",
+      LLM_1_MODEL: "m",
+      LLM_3_BASE_URL: "https://z",
+      LLM_3_MODEL: "m",
+    });
+
+    expect(cfg.llm.providers.map((provider) => provider.id)).toEqual(["provider-1", "provider-3"]);
+    expect(cfg.llm.issues).toEqual([expect.stringContaining("LLM_2_*")]);
+  });
+
+  it("номер вне диапазона 1…9 → issues, слот не используется", () => {
+    const cfg = createConfig({
+      LLM_0_BASE_URL: "https://zero",
+      LLM_0_MODEL: "m",
+      LLM_10_BASE_URL: "https://ten",
+      LLM_10_MODEL: "m",
+      LLM_1_BASE_URL: "https://x",
+      LLM_1_MODEL: "m",
+    });
+
+    expect(cfg.llm.providers.map((provider) => provider.id)).toEqual(["provider-1"]);
+    expect(cfg.llm.issues).toEqual([
+      expect.stringContaining("LLM_0_*"),
+      expect.stringContaining("LLM_10_*"),
+    ]);
+  });
+
+  it("неизвестное поле слота → issues (опечатка не теряется молча)", () => {
+    const cfg = createConfig({
+      LLM_1_BASE_URL: "https://x",
+      LLM_1_MODEL: "m",
+      LLM_1_BASEURL: "https://typo",
+    });
+
+    expect(cfg.llm.providers).toHaveLength(1);
+    expect(cfg.llm.issues).toEqual([expect.stringContaining("BASEURL")]);
   });
 
   it("мусор/ноль/отрицательное/пустое в числах — дефолт: валидно только конечное и > 0", () => {
     for (const bad of ["abc", "0", "-5", ""]) {
       const cfg = createConfig({
-        LLM_BASE_URL: "https://x",
-        LLM_MODEL: "m",
-        LLM_TIMEOUT_MS: bad,
+        LLM_1_BASE_URL: "https://x",
+        LLM_1_MODEL: "m",
+        LLM_1_TIMEOUT_MS: bad,
+        LLM_TOTAL_TIMEOUT_MS: bad,
+        LLM_COOLDOWN_MS: bad,
         LLM_MAX_TOKENS: bad,
       });
-      expect(cfg.llm).toMatchObject({ timeoutMs: 15_000, maxTokens: 1_024 });
+      expect(cfg.llm).toMatchObject({
+        maxTokens: 1_024,
+        totalTimeoutMs: 20_000,
+        cooldownMs: 60_000,
+      });
+      expect(cfg.llm.providers[0].timeoutMs).toBe(15_000);
     }
   });
 });
@@ -197,26 +323,34 @@ describe("config: logLevel", () => {
 
 describe("config: ленивость", () => {
   it("мутация env-объекта после createConfig видна геттерам", () => {
-    const env: NodeJS.ProcessEnv = { LLM_BASE_URL: "https://x" };
+    const env: NodeJS.ProcessEnv = { LLM_1_BASE_URL: "https://x" };
     const cfg = createConfig(env);
-    expect(cfg.llm).toBeNull();
+    expect(cfg.llm.providers).toEqual([]);
+    expect(cfg.llm.issues).toEqual([expect.stringContaining("LLM_1_")]);
 
-    // Модель добавили позже — llm стал не-null: env перечитан, не закэширован.
-    env.LLM_MODEL = "m";
-    expect(cfg.llm).toEqual({
-      baseUrl: "https://x",
-      apiKey: undefined,
-      model: "m",
-      timeoutMs: 15_000,
-      maxTokens: 1_024,
-    });
+    // Модель добавили позже — слот стал валидным: env перечитан, не закэширован.
+    env.LLM_1_MODEL = "m";
+    expect(cfg.llm.providers).toEqual([
+      {
+        id: "provider-1",
+        kind: "openai",
+        baseUrl: "https://x",
+        apiKey: undefined,
+        model: "m",
+        timeoutMs: 15_000,
+      },
+    ]);
+    expect(cfg.llm.issues).toEqual([]);
 
     env.LOG_LEVEL = "debug";
     expect(cfg.logLevel).toBe("debug");
   });
 
   it("дефолтный config видит vi.stubEnv (обратная совместимость, зеркально log.test.ts)", () => {
+    vi.stubEnv("LLM_1_BASE_URL", "https://x");
+    vi.stubEnv("LLM_1_MODEL", "m");
     vi.stubEnv("LOG_LEVEL", "debug");
+    expect(config.llm.providers).toHaveLength(1);
     expect(config.logLevel).toBe("debug");
   });
 });

@@ -5,7 +5,7 @@ import process from "node:process";
  * здесь, а не размазаны process.env.* по модулям.
  *
  * Слайсы (LlmSettings, RedisSettings, …) типизированы, и потребитель,
- * читающий config.llm.baseUrl, защищён tsc: несуществующее поле — ошибка
+ * читающий config.llm.providers, защищён tsc: несуществующее поле — ошибка
  * компиляции, а не молчаливый undefined в проде (индексная сигнатура
  * ProcessEnv от @types/node даёт только IDE-подсказки). Заодно парсинг (trim,
  * срез слэшей, Number(...) с дефолтом) живёт в одном месте, а не копируется
@@ -30,18 +30,41 @@ import process from "node:process";
 /** Уровни логирования; строка в env — register-независимая (см. logLevel). */
 export type LogLevel = "debug" | "info" | "warn" | "error";
 
-/** Срез LLM_*-переменных; null — LLM не настроен (нет baseUrl или model). */
-export interface LlmSettings {
-  /** Базовый URL endpoint: trim + без хвостовых слэшей (склейка путей конкатенацией). */
+/** Тип провайдера LLM: ключ реестра адаптеров в bot/llm/index.ts. */
+export type LlmProviderKind = "openai";
+
+/** Один провайдер цепочки: слот env `LLM_<n>_*`. */
+export interface LlmProviderSettings {
+  /** Идентификатор для логов и health (env LLM_n_ID, дефолт provider-<n>). */
+  id: string;
+  /** Протокол адаптера (env LLM_n_KIND, дефолт openai). */
+  kind: LlmProviderKind;
+  /** Базовый URL endpoint: trim + без хвостовых слэшей. */
   baseUrl: string;
   /** Bearer-ключ endpoint; undefined, если пустая/отсутствует. */
   apiKey?: string;
-  /** Модель (напр. gpt-oss:20b). */
+  /** Модель (напр. @cf/meta/llama-3.1-8b-instruct). */
   model: string;
-  /** Таймаут запроса, мс (env LLM_TIMEOUT_MS, дефолт 15000). */
+  /** Таймаут одной попытки, мс (LLM_n_TIMEOUT_MS, дефолт LLM_TIMEOUT_MS). */
   timeoutMs: number;
+}
+
+/**
+ * Срез LLM_*-переменных: упорядоченная цепочка провайдеров и общие ручки.
+ * Не-null всегда — «LLM не настроен» выражается пустым providers; так health
+ * показывает issues даже без валидных слотов.
+ */
+export interface LlmSettings {
+  /** Провайдеры в порядке попыток (слоты LLM_1_*…LLM_9_*). */
+  providers: LlmProviderSettings[];
   /** Потолок генерации ответа, токенов (env LLM_MAX_TOKENS, дефолт 1024). */
   maxTokens: number;
+  /** Общий бюджет chat() на все попытки, мс (LLM_TOTAL_TIMEOUT_MS, дефолт 20000). */
+  totalTimeoutMs: number;
+  /** Сколько не трогать упавшего провайдера, мс (LLM_COOLDOWN_MS, дефолт 60000). */
+  cooldownMs: number;
+  /** Неполные/невалидные слоты и опечатки — для логов и health. */
+  issues: string[];
 }
 
 /** Срез Redis-переменных одной пары; null — полной пары нет (stateless-режим). */
@@ -89,8 +112,8 @@ export interface HistorySettings {
 
 /** Корневой срез конфигурации; каждый слайс — ленивый геттер над env. */
 export interface AppConfig {
-  /** null — LLM_BASE_URL или LLM_MODEL отсутствуют. */
-  readonly llm: LlmSettings | null;
+  /** Цепочка провайдеров LLM; пустой providers — LLM не настроен. */
+  readonly llm: LlmSettings;
   /** null — нет полной пары; приоритет UPSTASH_REDIS_REST_* над KV_REST_API_*. */
   readonly redis: RedisSettings | null;
   readonly telegram: TelegramSettings;
@@ -111,6 +134,21 @@ const LLM_TIMEOUT_DEFAULT_MS = 15_000;
 // в промт каждого следующего запроса — атака «выдай максимум текста» сжигала
 // квоту ускоряясь.
 const LLM_MAX_TOKENS_DEFAULT = 1_024;
+
+// Общий бюджет chat() на все попытки: без него цепочка из N провайдеров
+// держала бы посетителя N × таймаут. 20 с — чуть больше одной попытки, чтобы
+// запасной успел ответить, но человек не ждал минуту.
+const LLM_TOTAL_TIMEOUT_DEFAULT_MS = 20_000;
+
+// Cooldown упавшего провайдера: тёплый инстанс не ждёт его таймаут на каждом
+// вопросе. 60 с — компромисс между «не долбить мёртвый endpoint» и «заметить
+// восстановление».
+const LLM_COOLDOWN_DEFAULT_MS = 60_000;
+
+// Диапазон номеров слотов LLM_<n>_*: порядок номеров = порядок попыток.
+// Вне диапазона — опечатка (LLM_0_*, LLM_10_*): слот в issues и не в цепочке.
+const LLM_SLOT_MIN = 1;
+const LLM_SLOT_MAX = 9;
 
 // Rate-limit «мозга» против выжигания квот (Ollama free / Upstash free /
 // Vercel Hobby): каждый вопрос — расход LLM-токенов и Redis-команд, без лимита
@@ -158,18 +196,95 @@ function withoutTrailingSlashes(url: string): string {
   return url.replace(/\/+$/, "");
 }
 
-function llmSettings(env: NodeJS.ProcessEnv): LlmSettings | null {
-  const baseUrl = str(env, "LLM_BASE_URL");
-  const model = str(env, "LLM_MODEL");
-  // Нет одного из двух обязательных — LLM не настроен; что с этим делать,
-  // решает потребитель: brain — dumb-поиск, ping — {ok:false, «не настроен»}.
-  if (!baseUrl || !model) return null;
+// Маска слота провайдера: LLM_<n>_<FIELD>. Захватывает номер и имя поля.
+const LLM_SLOT_KEY = /^LLM_(\d+)_(.+)$/;
+
+// Поля слота; всё остальное — опечатка, которую нельзя терять молча.
+const LLM_SLOT_FIELDS = new Set(["ID", "KIND", "BASE_URL", "API_KEY", "MODEL", "TIMEOUT_MS"]);
+
+// Реестр допустимых протоколов: продублирован здесь, чтобы config не
+// импортировал bot/llm (config — основание графа зависимостей).
+const LLM_PROVIDER_KINDS: readonly LlmProviderKind[] = ["openai"];
+
+function llmSettings(env: NodeJS.ProcessEnv): LlmSettings {
+  const timeoutDefault = num(env, "LLM_TIMEOUT_MS", LLM_TIMEOUT_DEFAULT_MS);
+  const issues: string[] = [];
+  const indices = new Set<number>();
+
+  // Номера слотов ищем по ключам env: общие ручки (LLM_TIMEOUT_MS,
+  // LLM_MAX_TOKENS, LLM_TOTAL_TIMEOUT_MS, LLM_COOLDOWN_MS) под маску не
+  // попадают — после LLM_ у них нет цифры.
+  for (const key of Object.keys(env)) {
+    const match = LLM_SLOT_KEY.exec(key);
+    if (!match) continue;
+    indices.add(Number(match[1]));
+    if (!LLM_SLOT_FIELDS.has(match[2])) {
+      issues.push(`LLM_${match[1]}_${match[2]}: неизвестное поле слота`);
+    }
+  }
+
+  const sorted = [...indices].sort((a, b) => a - b);
+  const inRange: number[] = [];
+  for (const index of sorted) {
+    if (index < LLM_SLOT_MIN || index > LLM_SLOT_MAX) {
+      issues.push(`LLM_${index}_*: номер вне диапазона ${LLM_SLOT_MIN}…${LLM_SLOT_MAX}`);
+      continue;
+    }
+    inRange.push(index);
+  }
+
+  // Дыры в нумерации: цепочка должна идти подряд с первого слота. Валидные
+  // слоты всё равно используем — опечатка не должна молча терять живого
+  // провайдера.
+  if (inRange.length > 0) {
+    const present = new Set(inRange);
+    for (let index = LLM_SLOT_MIN; index <= inRange[inRange.length - 1]; index++) {
+      if (!present.has(index)) issues.push(`LLM_${index}_*: пропуск в нумерации слотов`);
+    }
+  }
+
+  const providers: LlmProviderSettings[] = [];
+  const ids = new Set<string>();
+  for (const index of inRange) {
+    const prefix = `LLM_${index}_`;
+    const baseUrl = str(env, `${prefix}BASE_URL`);
+    const model = str(env, `${prefix}MODEL`);
+    // Неполный слот — в issues: молча пропустить значит спрятать опечатку
+    // в конфиге, из-за которой бот тихо уходит в dumb.
+    if (!baseUrl || !model) {
+      issues.push(`${prefix}*: нужны BASE_URL и MODEL — слот пропущен`);
+      continue;
+    }
+    const kindRaw = str(env, `${prefix}KIND`) ?? "openai";
+    const kind = LLM_PROVIDER_KINDS.find((candidate) => candidate === kindRaw);
+    if (!kind) {
+      issues.push(`${prefix}KIND: неизвестный тип «${kindRaw}» — слот пропущен`);
+      continue;
+    }
+    // id — ключ cooldown и строка health: дубль сделал бы состояние
+    // неоднозначным, поэтому второй слот с тем же id в цепочку не идёт.
+    const id = str(env, `${prefix}ID`) ?? `provider-${index}`;
+    if (ids.has(id)) {
+      issues.push(`${prefix}ID: дубль «${id}» — слот пропущен`);
+      continue;
+    }
+    ids.add(id);
+    providers.push({
+      id,
+      kind,
+      baseUrl: withoutTrailingSlashes(baseUrl),
+      apiKey: str(env, `${prefix}API_KEY`),
+      model,
+      timeoutMs: num(env, `${prefix}TIMEOUT_MS`, timeoutDefault),
+    });
+  }
+
   return {
-    baseUrl: withoutTrailingSlashes(baseUrl),
-    apiKey: str(env, "LLM_API_KEY"),
-    model,
-    timeoutMs: num(env, "LLM_TIMEOUT_MS", LLM_TIMEOUT_DEFAULT_MS),
+    providers,
     maxTokens: num(env, "LLM_MAX_TOKENS", LLM_MAX_TOKENS_DEFAULT),
+    totalTimeoutMs: num(env, "LLM_TOTAL_TIMEOUT_MS", LLM_TOTAL_TIMEOUT_DEFAULT_MS),
+    cooldownMs: num(env, "LLM_COOLDOWN_MS", LLM_COOLDOWN_DEFAULT_MS),
+    issues,
   };
 }
 

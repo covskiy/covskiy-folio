@@ -41,9 +41,16 @@ npx vercel login                # авторизация через браузе
 На Vercel (Project → Settings → Environment Variables) или через CLI:
 
 ```bash
-npx vercel env add LLM_BASE_URL production        # https://ollama.com/v1
-npx vercel env add LLM_API_KEY production         # ключ из ollama.com
-npx vercel env add LLM_MODEL production           # например gpt-oss:20b
+# Слот 1 — Cloudflare Workers AI (OpenAI-совместимый /ai/v1)
+npx vercel env add LLM_1_ID production           # cloudflare
+npx vercel env add LLM_1_BASE_URL production     # https://api.cloudflare.com/client/v4/accounts/<ACCOUNT_ID>/ai/v1
+npx vercel env add LLM_1_API_KEY production      # API token с доступом к Workers AI
+npx vercel env add LLM_1_MODEL production        # @cf/meta/llama-3.1-8b-instruct (сверять каталог)
+# Слот 2 — запасной OpenAI-совместимый endpoint (опционально)
+npx vercel env add LLM_2_ID production           # backup
+npx vercel env add LLM_2_BASE_URL production     # https://api.groq.com/openai/v1
+npx vercel env add LLM_2_API_KEY production
+npx vercel env add LLM_2_MODEL production        # llama-3.3-70b-versatile
 npx vercel env add TELEGRAM_BOT_TOKEN production  # токен от @BotFather
 npx vercel env add TELEGRAM_WEBHOOK_SECRET production
 ```
